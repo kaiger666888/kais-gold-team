@@ -1,0 +1,11 @@
+{
+  "task_id": "14062466-a473-42dc-8ec0-e45af2e82ab9",
+  "timestamp": 1779259148.5854695,
+  "iso_time": "2026-05-20T14:39:08+0800",
+  "error": "flux API not ready within 120s",
+  "system": {
+    "platform": "Linux-6.17.0-23-generic-x86_64-with-glibc2.39",
+    "python": "3.12.3",
+    "hostname": "kais-engine"
+  }
+}

@@ -1,0 +1,12 @@
+[
+  {
+    "name": "foreground",
+    "image_path": "/workspace/output/parallax_direct/foreground.png",
+    "z_depth": -1.5
+  },
+  {
+    "name": "background",
+    "image_path": "/workspace/output/parallax_direct/background.png",
+    "z_depth": 7.5
+  }
+]

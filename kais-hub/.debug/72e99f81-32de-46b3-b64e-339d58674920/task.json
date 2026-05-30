@@ -1,0 +1,23 @@
+{
+  "task_id": "72e99f81-32de-46b3-b64e-339d58674920",
+  "task_type": "image_draw",
+  "params": "{\"prompt\": \"a photorealistic cat sitting on a windowsill, golden hour lighting, detailed fur\", \"negative_prompt\": \"blurry, low quality, distorted\", \"width\": 512, \"height\": 512, \"num_inference_steps\": 20, \"guidance_scale\": 3.5, \"seed\": 42, \"output_format\": \"png\"}",
+  "assets": "[]",
+  "priority": 10,
+  "status": "pending",
+  "created_at": "2026-05-20T04:10:40.183160+00:00",
+  "updated_at": "2026-05-20T04:10:40.183169+00:00",
+  "created_by": "api",
+  "retry_count": 0,
+  "max_retries": 3,
+  "tags": "[]",
+  "description": "ENG-01 FLUX image_draw E2E test",
+  "telegram_msg_id": null,
+  "error_message": null,
+  "checkpoint_path": null,
+  "worker_id": null,
+  "done_at": null,
+  "callback_url": null,
+  "callback_secret": null,
+  "trace_id": "36c24f6d-8920-4216-929b-0a5844d01f79"
+}

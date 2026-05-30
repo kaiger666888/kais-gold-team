@@ -1,0 +1,23 @@
+{
+  "task_id": "6f1c30a2-ed4e-4fc8-9254-e6aa1b2bc300",
+  "task_type": "music_generation",
+  "params": "{\"prompt\": \"upbeat electronic dance music with a catchy melody, 120 BPM\", \"output_format\": \"mp3\"}",
+  "assets": "[]",
+  "priority": 10,
+  "status": "pending",
+  "created_at": "2026-05-20T04:14:20.366194+00:00",
+  "updated_at": "2026-05-20T04:14:20.366202+00:00",
+  "created_by": "api",
+  "retry_count": 0,
+  "max_retries": 3,
+  "tags": "[]",
+  "description": "ENG-04 music_generation E2E test",
+  "telegram_msg_id": null,
+  "error_message": null,
+  "checkpoint_path": null,
+  "worker_id": null,
+  "done_at": null,
+  "callback_url": null,
+  "callback_secret": null,
+  "trace_id": "f9efd630-bbc7-4f19-9ef7-10a6f201b54b"
+}

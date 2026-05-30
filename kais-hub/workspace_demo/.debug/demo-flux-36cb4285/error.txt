@@ -1,0 +1,2 @@
+Server error '500 Internal Server Error' for url 'http://localhost:18080/generate'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/500

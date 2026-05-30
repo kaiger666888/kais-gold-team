@@ -1,0 +1,11 @@
+{
+  "task_id": "43104d76-ce1d-47b3-9b77-575a3b8c9f03",
+  "timestamp": 1779259673.9317858,
+  "iso_time": "2026-05-20T14:47:53+0800",
+  "error": "Submit failed: Forge /v2/tts HTTP 422: {\"detail\":[{\"type\":\"enum\",\"loc\":[\"body\",\"encoder\",\"format\"],\"msg\":\"Input should be 'mp3', 'wav', 'ogg', 'acc', 'flac' or 'raw'\",\"input\":\"invalid_format_xyz\",\"ctx\":{\"expected\":\"'mp3', 'wav', 'ogg', 'acc', 'flac' or 'raw'\"}}]}",
+  "system": {
+    "platform": "Linux-6.17.0-23-generic-x86_64-with-glibc2.39",
+    "python": "3.12.3",
+    "hostname": "kais-engine"
+  }
+}

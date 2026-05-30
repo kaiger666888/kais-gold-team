@@ -1,0 +1,23 @@
+{
+  "task_id": "9d18b56f-a4bf-4c70-967f-f0d11a2088eb",
+  "task_type": "face_swap",
+  "params": "{\"source_image_path\": \"/tmp/test_face.png\", \"target_image_path\": \"/tmp/test_target.png\"}",
+  "assets": "[]",
+  "priority": 5,
+  "status": "pending",
+  "created_at": "2026-05-20T04:16:40.668032+00:00",
+  "updated_at": "2026-05-20T04:16:40.668040+00:00",
+  "created_by": "api",
+  "retry_count": 0,
+  "max_retries": 3,
+  "tags": "[]",
+  "description": "GPU-02 high-risk review test",
+  "telegram_msg_id": null,
+  "error_message": null,
+  "checkpoint_path": null,
+  "worker_id": null,
+  "done_at": null,
+  "callback_url": "http://127.0.0.1:3000/callback/gpu-task",
+  "callback_secret": "e0e5c30a8186d4ffd9ab429af2ec4eee73bb1d62e4d85c911ab391ef803fc1ab",
+  "trace_id": "2be0264b-6ef4-4374-aa48-f6dc682e364f"
+}

@@ -1,0 +1,11 @@
+{
+  "task_id": "68c7d5c3-4a0c-481b-8842-e91340fdcddf",
+  "timestamp": 1779259809.9854453,
+  "iso_time": "2026-05-20T14:50:09+0800",
+  "error": "Client error '404 Not Found' for url 'http://localhost:8080/generate'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/404",
+  "system": {
+    "platform": "Linux-6.17.0-23-generic-x86_64-with-glibc2.39",
+    "python": "3.12.3",
+    "hostname": "kais-engine"
+  }
+}

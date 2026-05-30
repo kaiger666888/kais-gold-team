@@ -1,0 +1,55 @@
+# Wan2.1 14B Image-to-Video Engine (Node 18)
+# Local image: kais-wan:latest
+# GPU: RTX 3090 (24GB), ~16GB VRAM
+
+name: wan14b_i2v
+engine: wan14b_i2v
+docker_image: kais-wan:latest
+api_port: 8081
+requires_gpu: true
+mode: api
+
+task_types:
+  wan14b_i2v_preview:
+    submit_endpoint: /generate
+    health_endpoint: /health
+    poll_timeout: 300
+    poll_interval: 3.0
+    params:
+      prompt:
+        type: string
+        default: ""
+      resolution:
+        type: string
+        default: "480p"
+      duration:
+        type: int
+        default: 5
+    assets:
+      required:
+        - role: reference_image
+          type: image
+          description: "Source image to animate"
+      accept: [image]
+
+  wan14b_i2v_final:
+    submit_endpoint: /generate
+    health_endpoint: /health
+    poll_timeout: 600
+    poll_interval: 3.0
+    params:
+      prompt:
+        type: string
+        default: ""
+      resolution:
+        type: string
+        default: "720p"
+      duration:
+        type: int
+        default: 5
+    assets:
+      required:
+        - role: reference_image
+          type: image
+          description: "Source image to animate"
+      accept: [image]

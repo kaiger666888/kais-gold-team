@@ -1,0 +1,11 @@
+{
+  "task_id": "cdf9599d-39b7-46bc-8530-7381f1c862f2",
+  "timestamp": 1779250457.0770118,
+  "iso_time": "2026-05-20T12:14:17+0800",
+  "error": "Submit failed: Forge /v2/tts HTTP 500: {\"detail\":\"unhandled errors in a TaskGroup (1 sub-exception)\"}",
+  "system": {
+    "platform": "Linux-6.17.0-23-generic-x86_64-with-glibc2.39",
+    "python": "3.12.3",
+    "hostname": "kais-engine"
+  }
+}

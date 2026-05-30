@@ -1,0 +1,1 @@
+Error: Submit failed: Forge /v2/tts HTTP 422: {"detail":[{"type":"enum","loc":["body","encoder","format"],"msg":"Input should be 'mp3', 'wav', 'ogg', 'acc', 'flac' or 'raw'","input":"invalid_format_xyz","ctx":{"expected":"'mp3', 'wav', 'ogg', 'acc', 'flac' or 'raw'"}}]}

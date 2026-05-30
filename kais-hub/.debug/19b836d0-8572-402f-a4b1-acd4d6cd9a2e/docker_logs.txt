@@ -1,0 +1,5 @@
+STDOUT:
+
+
+STDERR:
+Error response from daemon: No such container: kais-worker-19b836d0-8572-402f-a4b1-acd4d6cd9a2e

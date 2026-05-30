@@ -1,0 +1,28 @@
+Fri May  1 20:29:53 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 580.126.09             Driver Version: 580.126.09     CUDA Version: 13.0     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA GeForce RTX 3060 Ti     Off |   00000000:07:00.0  On |                  N/A |
+| 77%   54C    P0             86W /  200W |    1249MiB /   8192MiB |     75%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|    0   N/A  N/A            1694      G   /usr/lib/xorg/Xorg                      743MiB |
+|    0   N/A  N/A            1973      G   /usr/bin/gnome-shell                     69MiB |
+|    0   N/A  N/A            2623      G   ...exec/xdg-desktop-portal-gnome         73MiB |
+|    0   N/A  N/A           99702      G   /usr/bin/nautilus                        26MiB |
+|    0   N/A  N/A          530852      G   ...ess --variations-seed-version         39MiB |
+|    0   N/A  N/A         1022823      G   ...bin/snapd-desktop-integration         23MiB |
+|    0   N/A  N/A         2489044      G   ...rack-uuid=3190708988185955192        134MiB |
+|    0   N/A  N/A         2567467      G   /usr/bin/gnome-system-monitor            13MiB |
+|    0   N/A  N/A         2569984      G   /usr/bin/gnome-control-center            11MiB |
++-----------------------------------------------------------------------------------------+

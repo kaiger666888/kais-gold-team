@@ -1,0 +1,11 @@
+{
+  "task_id": "4bd315d7-16d7-4a1a-ab78-0c4565885ac9",
+  "timestamp": 1779260223.9657435,
+  "iso_time": "2026-05-20T14:57:03+0800",
+  "error": "Submit failed: No source file found",
+  "system": {
+    "platform": "Linux-6.17.0-23-generic-x86_64-with-glibc2.39",
+    "python": "3.12.3",
+    "hostname": "kais-engine"
+  }
+}

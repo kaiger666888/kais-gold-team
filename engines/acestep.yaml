@@ -1,0 +1,27 @@
+# AceStep Audio Generation Engine (Node 26)
+# Local image: kais-acestep:latest
+# GPU: RTX 3060Ti, ~8GB VRAM
+
+name: acestep
+engine: acestep
+docker_image: kais-acestep:latest
+api_port: 8009
+requires_gpu: true
+mode: polling
+
+task_types:
+  audio_generate:
+    submit_endpoint: /process
+    health_endpoint: /health
+    poll_timeout: 300
+    poll_interval: 3.0
+    params:
+      text:
+        type: string
+        default: ""
+      duration:
+        type: int
+        default: 5
+    assets:
+      required: []
+      accept: []

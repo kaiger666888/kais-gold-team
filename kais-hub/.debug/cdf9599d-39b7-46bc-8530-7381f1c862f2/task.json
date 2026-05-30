@@ -1,0 +1,23 @@
+{
+  "task_id": "cdf9599d-39b7-46bc-8530-7381f1c862f2",
+  "task_type": "tts_generation",
+  "params": "{\"text\": \"This is an end-to-end integration test for TTS generation.\", \"voice_id\": \"default\", \"language\": \"en\", \"output_format\": \"wav\"}",
+  "assets": "[]",
+  "priority": 10,
+  "status": "pending",
+  "created_at": "2026-05-20T04:13:30.284843+00:00",
+  "updated_at": "2026-05-20T04:13:30.284852+00:00",
+  "created_by": "api",
+  "retry_count": 0,
+  "max_retries": 3,
+  "tags": "[]",
+  "description": "ENG-03 tts_generation E2E test",
+  "telegram_msg_id": null,
+  "error_message": null,
+  "checkpoint_path": null,
+  "worker_id": null,
+  "done_at": null,
+  "callback_url": null,
+  "callback_secret": null,
+  "trace_id": "cc939a50-b40d-41c0-b7e4-7174c88e90e4"
+}

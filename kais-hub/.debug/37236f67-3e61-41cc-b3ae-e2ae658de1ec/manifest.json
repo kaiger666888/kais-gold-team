@@ -1,0 +1,11 @@
+{
+  "task_id": "37236f67-3e61-41cc-b3ae-e2ae658de1ec",
+  "timestamp": 1779250404.957425,
+  "iso_time": "2026-05-20T12:13:24+0800",
+  "error": "Submit failed: Cannot load model Wan-AI/Wan2.1-T2V-1.3B-Diffusers: model is not cached locally and an error occurred while trying to fetch metadata from the Hub. Please check out the root cause in the stacktrace above.",
+  "system": {
+    "platform": "Linux-6.17.0-23-generic-x86_64-with-glibc2.39",
+    "python": "3.12.3",
+    "hostname": "kais-engine"
+  }
+}

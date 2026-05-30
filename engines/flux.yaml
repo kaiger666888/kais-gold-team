@@ -1,0 +1,39 @@
+# FLUX Text-to-Image Engine
+# Local image: kais-flux:latest
+# GPU: RTX 3090, ~12GB VRAM
+
+name: flux
+engine: flux
+docker_image: kais-flux:latest
+api_port: 8080
+requires_gpu: true
+mode: api
+
+task_types:
+  flux_draw:
+    submit_endpoint: /generate
+    health_endpoint: /health
+    poll_timeout: 120
+    poll_interval: 2.0
+    params:
+      prompt:
+        type: string
+        default: ""
+      negative_prompt:
+        type: string
+        default: ""
+      width:
+        type: int
+        default: 1024
+      height:
+        type: int
+        default: 1024
+      num_inference_steps:
+        type: int
+        default: 28
+      guidance_scale:
+        type: float
+        default: 3.5
+    assets:
+      required: []
+      accept: []

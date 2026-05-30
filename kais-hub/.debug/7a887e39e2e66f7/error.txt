@@ -1,0 +1,2 @@
+Server error '500 Internal Server Error' for url 'http://localhost:7870/v2/tts'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/500

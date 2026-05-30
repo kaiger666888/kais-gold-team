@@ -1,0 +1,33 @@
+# LTX-Video Image-to-Video Engine (Node 17)
+# Local image: kais-ltx:latest
+# GPU: RTX 3090 (24GB)
+
+name: ltx_i2v
+engine: ltx_i2v
+docker_image: kais-ltx:latest
+api_port: 8083
+requires_gpu: true
+mode: api
+
+task_types:
+  ltx_i2v_preview:
+    submit_endpoint: /generate
+    health_endpoint: /health
+    poll_timeout: 300
+    poll_interval: 2.0
+    params:
+      prompt:
+        type: string
+        default: ""
+      num_frames:
+        type: int
+        default: 97
+      fps:
+        type: int
+        default: 24
+    assets:
+      required:
+        - role: reference_image
+          type: image
+          description: "Source image to animate"
+      accept: [image]

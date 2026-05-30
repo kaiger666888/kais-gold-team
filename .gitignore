@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.env
+data/
+*.png
+*.wav
+*.mp4
+.venv/
+*.whl
+wheels/

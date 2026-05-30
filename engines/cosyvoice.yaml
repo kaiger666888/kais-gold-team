@@ -1,0 +1,33 @@
+# CosyVoice TTS Engine (Node 28)
+# Local image: kais-gold-team:cosyvoice2
+# GPU: RTX 3060Ti, ~4GB VRAM
+
+name: cosyvoice
+engine: cosyvoice
+docker_image: kais-gold-team:cosyvoice2
+api_port: 9880
+requires_gpu: true
+mode: api
+
+task_types:
+  cosyvoice_tts:
+    submit_endpoint: /tts
+    health_endpoint: /health
+    poll_timeout: 60
+    poll_interval: 1.0
+    params:
+      text:
+        type: string
+        default: ""
+      speaker:
+        type: string
+        default: "default"
+      speed:
+        type: float
+        default: 1.0
+      language:
+        type: string
+        default: "zh"
+    assets:
+      required: []
+      accept: []

@@ -1,0 +1,342 @@
+# =============================================================================
+# KAIS AIGC Platform V6.0 — Docker Compose
+# =============================================================================
+# 架构概览:
+#   宿主机 (192.168.71.166): AMD Ryzen 7 5800X3D + dual GPU
+#   GPU 0: RTX 3060 Ti 8G — display + NVENC/NVDEC + ffmpeg IO (host, 非 Docker)
+#   GPU 1: RTX 3090 24G — CUDA 推理主力 (所有 AIGC 推理 + 后处理)
+#
+# 网络: kais-net (bridge)
+# 存储: /mnt/agents/output (共享产物), /opt/kais/models (模型缓存)
+# 配置: .env 文件注入环境变量
+#
+# 用法:
+#   生产:   docker compose -f docker-compose.v6.yml up -d
+#   开发:   docker compose -f docker-compose.v6.yml --profile mock up -d
+#   停止:   docker compose -f docker-compose.v6.yml down
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # 1. kais-core-backend (Toonflow Express Server)
+  # ---------------------------------------------------------------------------
+  # 原有 Toonflow 项目，剥离 Electron 后的纯后端服务
+  # 负责: 项目管理、角色管理、分镜管理、SQLite 同步、API 网关
+  # 不需要 GPU
+  # ---------------------------------------------------------------------------
+  kais-core-backend:
+    build:
+      context: .
+      dockerfile: docker/core-backend/Dockerfile
+    container_name: kais-core-backend
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${CORE_PORT:-8000}:8000"
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      PORT: 8000
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgresql://${POSTGRES_USER:-kais}:${POSTGRES_PASSWORD:-kais}@audit-db:5432/${POSTGRES_DB:-kais_audit}
+    volumes:
+      - core-data:/app/data                    # Toonflow 项目数据 (SQLite 等)
+      - ${OUTPUT_DIR:-/mnt/agents/output}:/mnt/agents/output  # 共享产物目录
+    networks:
+      - kais-net
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8000/health').then(r=>{process.exit(r.ok?0:1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      redis:
+        condition: service_healthy
+      audit-db:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # 2. kais-movie-agent (调度中枢)
+  # ---------------------------------------------------------------------------
+  # 负责: 工作流编排、任务调度、状态机管理、Telegram 通知
+  # 依赖: core-backend (项目数据), gold-team (执行引擎)
+  # 未来计划迁移到 Python
+  # ---------------------------------------------------------------------------
+  kais-movie-agent:
+    build:
+      context: ./docker/movie-agent
+      dockerfile: Dockerfile
+    container_name: kais-movie-agent
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${MOVIE_AGENT_PORT:-8001}:8001"
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      PORT: 8001
+      CORE_BACKEND_URL: http://kais-core-backend:8000
+      GOLD_TEAM_URL: http://kais-gold-team:8002
+      REVIEW_PLATFORM_URL: http://kais-review-platform:8090
+      REDIS_URL: redis://redis:6379
+    volumes:
+      - ${OUTPUT_DIR:-/mnt/agents/output}:/mnt/agents/output
+    networks:
+      - kais-net
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8001/health').then(r=>{process.exit(r.ok?0:1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      kais-core-backend:
+        condition: service_healthy
+      kais-gold-team:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # 3. kais-gold-team (统一执行 Agent)
+  # ---------------------------------------------------------------------------
+  # 负责: 调用 ComfyUI / 云端引擎执行图片/视频/音频生成任务
+  # 需要 GPU 1 (RTX 3090) — 用于本地推理加速
+  # 注意: GPU 0 是 3060Ti (显示/IO), GPU 1 才是 3090 (推理主力)
+  # Redis Streams 消费者，接收 gold-team 任务
+  # ---------------------------------------------------------------------------
+  kais-gold-team:
+    build:
+      context: ../kais-gold-team
+      dockerfile: /home/kai/.openclaw/workspace/kais-aigc-platform/docker/gold-team/Dockerfile
+    container_name: kais-gold-team
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${GOLD_TEAM_PORT:-8002}:8002"
+    env_file: .env
+    environment:
+      PORT: 8002
+      COMFYUI_URL: http://comfyui-worker:8188
+      REDIS_URL: redis://redis:6379
+      OUTPUT_DIR: /mnt/agents/output
+      MODELS_DIR: /opt/kais/models
+      # 云端引擎 API Keys 从 .env 注入
+    volumes:
+      - ${OUTPUT_DIR:-/mnt/agents/output}:/mnt/agents/output
+      - ${MODELS_DIR:-/opt/kais/models}:/opt/kais/models:ro
+    networks:
+      - kais-net
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["1"]     # GPU 1 = RTX 3090 (CUDA 推理主力)
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s            # GPU 服务启动较慢
+    depends_on:
+      redis:
+        condition: service_healthy
+      comfyui-worker:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # 4. comfyui-worker (ComfyUI 推理引擎)
+  # ---------------------------------------------------------------------------
+  # 负责: Stable Diffusion / SDXL / 本地模型的 GPU 推理
+  # 需要 GPU 1 (RTX 3090) — 全部显存用于推理
+  # 注意: GPU 0 是 3060Ti (显示/IO), GPU 1 才是 3090 (推理主力)
+  # 模型文件挂载自 /opt/kais/models
+  # ---------------------------------------------------------------------------
+  comfyui-worker:
+    build:
+      context: .
+      dockerfile: docker/comfyui-worker/Dockerfile
+    container_name: comfyui-worker
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${COMFYUI_PORT:-8188}:8188"
+    env_file: .env
+    environment:
+      COMFYUI_LISTEN: "0.0.0.0"
+      COMFYUI_PORT: 8188
+      OUTPUT_DIR: /mnt/agents/output
+      MODELS_DIR: /opt/kais/models
+    volumes:
+      - ${OUTPUT_DIR:-/mnt/agents/output}:/mnt/agents/output
+      - ${MODELS_DIR:-/opt/kais/models}:/opt/kais/models
+      - comfyui-custom-nodes:/app/ComfyUI/custom_nodes
+    networks:
+      - kais-net
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["1"]     # GPU 1 = RTX 3090 (CUDA 推理主力)
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8188/system_stats')"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s           # ComfyUI 首次加载模型很慢
+
+  # ---------------------------------------------------------------------------
+  # 5. kais-review-platform (审核平台)
+  # ---------------------------------------------------------------------------
+  # 负责: 人工审核界面 (HTMX/Alpine)、治理审批 API、Audit DB 只读查询
+  # 不需要 GPU，只读访问产物目录
+  # ---------------------------------------------------------------------------
+  kais-review-platform:
+    build:
+      context: ../kais-review-platform
+      dockerfile: /home/kai/.openclaw/workspace/kais-aigc-platform/docker/review-platform/Dockerfile
+    container_name: kais-review-platform
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${REVIEW_PORT:-8090}:8090"
+    env_file: .env
+    environment:
+      PORT: 8090
+      POSTGRES_URL: postgresql+asyncpg://${POSTGRES_USER:-kais}:${POSTGRES_PASSWORD:-kais}@audit-db:5432/${POSTGRES_DB:-kais_audit}
+      API_KEY: ${REVIEW_API_KEY:-kais-review-dev-key}
+      JWT_SECRET: ${REVIEW_JWT_SECRET:-kais-review-jwt-dev-2026}
+      REDIS_URL: redis://redis:6379/0
+      OUTPUT_DIR: /mnt/agents/output
+    volumes:
+      - ${OUTPUT_DIR:-/mnt/agents/output}:/mnt/agents/output:ro  # 只读！
+    networks:
+      - kais-net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    depends_on:
+      audit-db:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # 6. audit-db (PostgreSQL 15)
+  # ---------------------------------------------------------------------------
+  # 审计数据库: 任务记录、审核日志、状态历史
+  # 数据持久化到 audit-data volume
+  # ---------------------------------------------------------------------------
+  audit-db:
+    image: postgres:15-alpine
+    container_name: kais-audit-db
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-kais}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kais}
+      POSTGRES_DB: ${POSTGRES_DB:-kais_audit}
+    volumes:
+      - audit-data:/var/lib/postgresql/data
+    networks:
+      - kais-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-kais}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # 7. redis (缓存 + 消息队列)
+  # ---------------------------------------------------------------------------
+  # 用于: 任务队列 (Redis Streams)、Pub/Sub 通知、缓存
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: kais-redis
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    command: redis-server --appendonly yes --maxmemory 2gb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    networks:
+      - kais-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ===========================================================================
+  # Mock Profiles (开发阶段替代真实 GPU 服务)
+  # ===========================================================================
+  # 启用方式: docker compose --profile mock up -d
+  # mock 服务替代 gold-team / comfyui-worker，返回模拟数据
+  # ===========================================================================
+
+  kais-gold-team-mock:
+    build:
+      context: .
+      dockerfile: docker/gold-team/Dockerfile.mock
+    container_name: kais-gold-team-mock
+    restart: unless-stopped
+    profiles:
+      - mock
+    ports:
+      - "127.0.0.1:${GOLD_TEAM_PORT:-8002}:8002"
+    environment:
+      PORT: 8002
+      MOCK_MODE: "true"
+    volumes:
+      - ${OUTPUT_DIR:-/mnt/agents/output}:/mnt/agents/output
+    networks:
+      - kais-net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  comfyui-worker-mock:
+    build:
+      context: .
+      dockerfile: docker/comfyui-worker/Dockerfile.mock
+    container_name: comfyui-worker-mock
+    restart: unless-stopped
+    profiles:
+      - mock
+    ports:
+      - "127.0.0.1:${COMFYUI_PORT:-8188}:8188"
+    environment:
+      MOCK_MODE: "true"
+    networks:
+      - kais-net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8188/system_stats')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  kais-net:
+    name: kais-net
+    driver: bridge
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  audit-data:
+    name: kais-audit-data
+  redis-data:
+    name: kais-redis-data
+  core-data:
+    name: kais-core-data
+  comfyui-custom-nodes:
+    name: kais-comfyui-custom-nodes

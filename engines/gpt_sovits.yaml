@@ -1,0 +1,33 @@
+# GPT-SoVITS Voice Cloning Engine (Node 29)
+# Local image: kais-gpt_sovits:latest
+# GPU: RTX 3060Ti, ~4GB VRAM
+
+name: gpt_sovits
+engine: gpt_sovits
+docker_image: kais-gpt_sovits:latest
+api_port: 8094
+requires_gpu: true
+mode: api
+
+task_types:
+  voice_clone:
+    submit_endpoint: /clone
+    health_endpoint: /health
+    poll_timeout: 300
+    poll_interval: 2.0
+    params:
+      text:
+        type: string
+        default: ""
+      language:
+        type: string
+        default: "zh"
+      speed:
+        type: float
+        default: 1.0
+    assets:
+      required:
+        - role: reference_audio
+          type: audio
+          description: "Reference audio for voice cloning"
+      accept: [audio]

@@ -1,0 +1,36 @@
+# SDXL Lightning Fast Draft (Node 1)
+# Local image: kais-sdxl:latest
+# GPU: RTX 3060Ti, ~4GB VRAM
+
+name: sdxl_lightning
+engine: sdxl_lightning
+docker_image: kais-sdxl:latest
+api_port: 8087
+requires_gpu: true
+mode: api
+
+task_types:
+  sdxl_draw:
+    submit_endpoint: /generate
+    health_endpoint: /health
+    poll_timeout: 60
+    poll_interval: 2.0
+    params:
+      prompt:
+        type: string
+        default: ""
+      negative_prompt:
+        type: string
+        default: ""
+      width:
+        type: int
+        default: 1024
+      height:
+        type: int
+        default: 1024
+      num_inference_steps:
+        type: int
+        default: 4
+    assets:
+      required: []
+      accept: []

@@ -1,0 +1,64 @@
+# Kais Hub Configuration — Single-machine deployment
+# All services run on localhost
+
+telegram:
+  bot_token: "8769698666:AAFQIc2Bz1g_fQh9KwXog4mak6hQetDn8w8"
+  allowed_users:
+    - 123456789  # TODO: replace with actual Telegram user ID
+
+api:
+  host: "0.0.0.0"
+  port: 8900
+  hmac_secret: ""  # Uses HMAC_SECRET env var
+
+syncthing:
+  host: "127.0.0.1"
+  port: 8384
+  api_key: ""
+  inbox_folder: "kais-hub-inbox"
+  done_folder: "kais-hub-done"
+
+sftp:
+  host: "192.168.71.38"  # This worker machine
+  port: 22
+  user: "kai"
+  key_path: "~/.ssh/id_rsa"
+
+database:
+  path: "./queue.sqlite3"
+
+worker:
+  callback_url: "http://127.0.0.1:8900/callback"
+
+disk:
+  freeze_gb: 50
+  critical_gb: 20
+  archive_days: 30
+  archive_max_projects: 3
+
+tools:
+  blender:
+    docker_image: "kais-blender:latest"
+
+  facefusion:
+    docker_image: "kais-facefusion:latest"
+    video_memory_strategy: "strict"
+
+  acestep:
+    docker_image: "kais-acestep:latest"
+    api_port: 8001
+    models_path: "/home/kai/workspace/ACE-Step-1.5/checkpoints"
+
+  tts:
+    docker_image: "kais-forge:latest"
+    api_port: 7870
+
+  woosh:
+    docker_image: "kais-woosh:latest"
+    api_port: 8002
+
+  parallax:
+    docker_image: "kais-parallax:latest"
+    api_port: 8090
+    # midas_model_path: "/path/to/shared_models/midas"   # Optional: pre-cached MiDaS model
+    # rembg_model_path: "/path/to/shared_models/rembg"   # Optional: pre-cached rembg models

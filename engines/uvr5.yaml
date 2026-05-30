@@ -1,0 +1,27 @@
+# UVR5 Audio Separation Engine (Node 27)
+# Local image: kais-uvr5:latest
+# GPU: CPU-only (fast enough)
+
+name: uvr5
+engine: uvr5
+docker_image: kais-uvr5:latest
+api_port: 8093
+requires_gpu: false
+mode: api
+
+task_types:
+  audio_separate:
+    submit_endpoint: /separate
+    health_endpoint: /health
+    poll_timeout: 120
+    poll_interval: 2.0
+    params:
+      stems:
+        type: int
+        default: 2
+    assets:
+      required:
+        - role: source_audio
+          type: audio
+          description: "Audio file for separation"
+      accept: [audio]

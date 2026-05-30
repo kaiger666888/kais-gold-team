@@ -1,0 +1,30 @@
+# FaceFusion Engine
+# Local image: kais-facefusion:latest
+# GPU: RTX 3090, ~12GB VRAM
+
+name: facefusion
+engine: facefusion
+docker_image: kais-facefusion:latest
+api_port: 7860
+requires_gpu: true
+mode: api
+
+task_types:
+  face_swap:
+    submit_endpoint: /process
+    health_endpoint: /health
+    poll_timeout: 120
+    poll_interval: 2.0
+    params:
+      enhance_face:
+        type: bool
+        default: true
+    assets:
+      required:
+        - role: source_image
+          type: image
+          description: "Face image for swapping"
+        - role: target_image
+          type: image
+          description: "Target image to apply face to"
+      accept: [image]

@@ -1,0 +1,2 @@
+Client error '400 Bad Request' for url 'http://localhost:8001/release_task'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/400

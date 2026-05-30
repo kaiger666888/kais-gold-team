@@ -1,0 +1,19 @@
+{
+  "task_id": "3fff6d3e-2361-4b50-832d-836bafa84369",
+  "task_type": "tts_generation",
+  "params": {
+    "text": "inbox test",
+    "voice": "default"
+  },
+  "assets": [],
+  "priority": 5,
+  "created_at": "2026-05-20T03:47:52.662138+00:00",
+  "created_by": "api",
+  "retry_count": 0,
+  "max_retries": 3,
+  "tags": [],
+  "description": "API: tts_generation",
+  "callback_url": null,
+  "callback_secret": null,
+  "trace_id": null
+}

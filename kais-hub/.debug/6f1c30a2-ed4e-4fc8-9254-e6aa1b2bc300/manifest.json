@@ -1,0 +1,11 @@
+{
+  "task_id": "6f1c30a2-ed4e-4fc8-9254-e6aa1b2bc300",
+  "timestamp": 1779250495.2029657,
+  "iso_time": "2026-05-20T12:14:55+0800",
+  "error": "Unknown error",
+  "system": {
+    "platform": "Linux-6.17.0-23-generic-x86_64-with-glibc2.39",
+    "python": "3.12.3",
+    "hostname": "kais-engine"
+  }
+}

@@ -1,0 +1,30 @@
+# RIFE Video Interpolation Engine (Node 20)
+# Local image: kais-rife:latest
+# GPU: RTX 3090, ~4GB VRAM
+
+name: rife
+engine: rife
+docker_image: kais-rife:latest
+api_port: 8086
+requires_gpu: true
+mode: api
+
+task_types:
+  rife_interpolation:
+    submit_endpoint: /process
+    health_endpoint: /health
+    poll_timeout: 300
+    poll_interval: 2.0
+    params:
+      scale_factor:
+        type: int
+        default: 2
+      output_fps:
+        type: int
+        default: 48
+    assets:
+      required:
+        - role: source_video
+          type: video
+          description: "Input video for frame interpolation"
+      accept: [video]

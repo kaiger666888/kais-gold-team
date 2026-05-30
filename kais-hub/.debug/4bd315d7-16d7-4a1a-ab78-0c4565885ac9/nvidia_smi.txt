@@ -1,0 +1,37 @@
+Wed May 20 14:57:03 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 580.142                Driver Version: 580.142        CUDA Version: 13.0     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA GeForce RTX 3060 Ti     Off |   00000000:04:00.0  On |                  N/A |
+|  0%   43C    P0             46W /  200W |     299MiB /   8192MiB |     23%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+|   1  NVIDIA GeForce RTX 3090        Off |   00000000:07:00.0  On |                  N/A |
+|  0%   42C    P3             87W /  370W |    2664MiB /  24576MiB |     21%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|    0   N/A  N/A            3245      G   /usr/lib/xorg/Xorg                      187MiB |
+|    0   N/A  N/A          909066      G   ...nstallation/ubuntu12_32/steam         36MiB |
+|    0   N/A  N/A         3790274      G   ./steamwebhelper                          5MiB |
+|    1   N/A  N/A            3245      G   /usr/lib/xorg/Xorg                     1329MiB |
+|    1   N/A  N/A            4882      G   /usr/bin/gnome-shell                     55MiB |
+|    1   N/A  N/A           35207      G   ...ess --variations-seed-version         54MiB |
+|    1   N/A  N/A          411161      G   ...-reborn/54/notion-snap-reborn        171MiB |
+|    1   N/A  N/A          434929      G   ...rack-uuid=3190708988185955192        372MiB |
+|    1   N/A  N/A          844076      G   ghostty                                  66MiB |
+|    1   N/A  N/A         1240428      G   /usr/bin/gnome-control-center            15MiB |
+|    1   N/A  N/A         1809765      G   ...6994/usr/bin/telegram-desktop         74MiB |
+|    1   N/A  N/A         2495455      G   ...nap-store/1367/bin/snap-store        265MiB |
+|    1   N/A  N/A         2804886      G   /usr/bin/nautilus                        17MiB |
+|    1   N/A  N/A         2818178      G   /usr/bin/gnome-text-editor               22MiB |
++-----------------------------------------------------------------------------------------+

@@ -1,0 +1,53 @@
+{
+  "_meta": {
+    "version": "2.1.0",
+    "description": "V2 32-Node Routing Table — 3090 (24G) + 3060Ti (8G) + CPU (from Notion spec section 5)",
+    "topology": {
+      "gpu0": {"name": "RTX 3090", "pcie": "gen4_x16", "vram_cap_mb": 21504, "mode": "Zero Resident Heavy"},
+      "gpu1": {"name": "RTX 3060Ti", "pcie": "gen3_x4", "vram_cap_mb": 7168, "mode": "Combo Resident Light"},
+      "cpu": {"mode": "CPU offload"}
+    },
+    "combo_definitions": {
+      "combo_a": {"models": ["sdxl_lightning"], "total_vram_mb": 6144, "description": "海量图像抽卡、构图验证"},
+      "combo_b": {"models": ["cosyvoice"], "total_vram_mb": 6144, "description": "对白 TTS 批量生成"},
+      "combo_c": {"models": ["gpt_sovits", "musetalk"], "total_vram_mb": 8192, "description": "语音克隆 + 对口型"},
+      "combo_d": {"models": ["stable_audio"], "total_vram_mb": 7680, "description": "BGM + SFX 批量"},
+      "combo_e": {"models": ["liveportrait"], "total_vram_mb": 6144, "description": "虚拟人/口播镜头"},
+      "combo_f": {"models": ["foleycrafter", "rvc"], "total_vram_mb": 8192, "description": "拟音 + 变声"}
+    }
+  },
+  "nodes": [
+    {"node": 1,  "name": "文生图（低参抽卡）",       "model_id": "sdxl_lightning", "target_gpu": "3060ti", "combo_id": "A", "priority": 1},
+    {"node": 2,  "name": "文生图（高参生产）",       "model_id": "sd35_large",     "target_gpu": "3090",   "combo_id": null, "priority": 1},
+    {"node": 3,  "name": "图生文（反推标签）",       "model_id": "wd14_onnx",      "target_gpu": "cpu",    "combo_id": null, "priority": 1},
+    {"node": 4,  "name": "图生图（低参）",           "model_id": "sdxl_ipadapter", "target_gpu": "3060ti", "combo_id": "A", "priority": 1},
+    {"node": 5,  "name": "图生图（高参精修）",       "model_id": "sd35_pulid",     "target_gpu": "3090",   "combo_id": null, "priority": 1},
+    {"node": 6,  "name": "视频生图（废片修复）",     "model_id": "sd35_reframe",   "target_gpu": "3090",   "combo_id": null, "priority": 1},
+    {"node": 7,  "name": "文生动作",                 "model_id": "motiongpt",      "target_gpu": "cpu",    "combo_id": null, "priority": 1},
+    {"node": 8,  "name": "文生3D（低参原型）",       "model_id": "hunyuan3d2_mini","target_gpu": "cpu",    "combo_id": null, "priority": 1},
+    {"node": 9,  "name": "文生3D（高参资产）",       "model_id": "hunyuan3d2",     "target_gpu": "3090",   "combo_id": null, "priority": 1},
+    {"node": 10, "name": "图生3D（低参）",           "model_id": "hunyuan3d2_mini","target_gpu": "cpu",    "combo_id": null, "priority": 1},
+    {"node": 11, "name": "图生3D（高参）",           "model_id": "hunyuan3d2",     "target_gpu": "3090",   "combo_id": null, "priority": 1},
+    {"node": 12, "name": "文生虚拟人",               "model_id": "liveportrait",   "target_gpu": "3060ti", "combo_id": "E", "priority": 1},
+    {"node": 13, "name": "图生虚拟人",               "model_id": "liveportrait",   "target_gpu": "3060ti", "combo_id": "E", "priority": 1},
+    {"node": 14, "name": "文生场景",                 "model_id": "sd35_scene",     "target_gpu": "3090",   "combo_id": null, "priority": 1},
+    {"node": 15, "name": "文生视频（低参预览）",     "model_id": "wan13b",         "target_gpu": "3090",   "combo_id": null, "priority": 1},
+    {"node": 16, "name": "文生视频（高参确认）",     "model_id": "wan14b",         "target_gpu": "3090",   "combo_id": null, "priority": 1},
+    {"node": 17, "name": "图生视频（低参预览）",     "model_id": "ltx_i2v",        "target_gpu": "3090",   "combo_id": null, "priority": 1},
+    {"node": 18, "name": "图生视频（高参确认）",     "model_id": "wan14b_i2v",     "target_gpu": "3090",   "combo_id": null, "priority": 1},
+    {"node": 19, "name": "视频生视频",               "model_id": "wan14b_v2v",     "target_gpu": "3090",   "combo_id": null, "priority": 1},
+    {"node": 20, "name": "视频延长/补帧",            "model_id": "rife",           "target_gpu": "3090",   "combo_id": null, "priority": 1},
+    {"node": 21, "name": "对口型",                   "model_id": "musetalk",       "target_gpu": "3060ti", "combo_id": "C", "priority": 1},
+    {"node": 22, "name": "文生音乐（日常BGM）",      "model_id": "stable_audio",   "target_gpu": "3060ti", "combo_id": "D", "priority": 1},
+    {"node": 23, "name": "文生音乐（主题曲/终版）",  "model_id": "yue_7b",         "target_gpu": "3090",   "combo_id": null, "priority": 1},
+    {"node": 24, "name": "音乐生音乐",               "model_id": "stable_audio",   "target_gpu": "3060ti", "combo_id": "D", "priority": 1},
+    {"node": 25, "name": "文生音效",                 "model_id": "stable_audio",   "target_gpu": "3060ti", "combo_id": "D", "priority": 1, "alternate": {"model_id": "foleycrafter", "combo_id": "F"}},
+    {"node": 26, "name": "视频生音频（Foley）",      "model_id": "foleycrafter",   "target_gpu": "3060ti", "combo_id": "F", "priority": 1},
+    {"node": 27, "name": "音频生音频（分离/修复）",  "model_id": "uvr5",           "target_gpu": "cpu",    "combo_id": null, "priority": 1},
+    {"node": 28, "name": "文生语音 TTS",             "model_id": "cosyvoice",      "target_gpu": "3060ti", "combo_id": "B", "priority": 1},
+    {"node": 29, "name": "语音克隆",                 "model_id": "gpt_sovits",     "target_gpu": "3060ti", "combo_id": "C", "priority": 1},
+    {"node": 30, "name": "语音变声",                 "model_id": "rvc",            "target_gpu": "3060ti", "combo_id": "F", "priority": 1},
+    {"node": 31, "name": "视频生文/字幕",            "model_id": "whisper_large_v3","target_gpu": "cpu",   "combo_id": null, "priority": 1},
+    {"node": 32, "name": "字幕合成/剪辑",            "model_id": "ffmpeg_x264",    "target_gpu": "cpu",    "combo_id": null, "priority": 1}
+  ]
+}

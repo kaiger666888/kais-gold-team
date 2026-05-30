@@ -1,0 +1,30 @@
+# Wan2.1 1.3B Text-to-Video (Preview/Low-param, Node 15)
+# Local image: kais-wan:latest (same image, different model param)
+# GPU: RTX 3090, ~8GB VRAM — fast preview
+
+name: wan13b
+engine: wan13b
+docker_image: kais-wan:latest
+api_port: 8081
+requires_gpu: true
+mode: api
+
+task_types:
+  wan13b_t2v_preview:
+    submit_endpoint: /generate
+    health_endpoint: /health
+    poll_timeout: 180
+    poll_interval: 2.0
+    params:
+      prompt:
+        type: string
+        default: ""
+      resolution:
+        type: string
+        default: "480p"
+      duration:
+        type: int
+        default: 3
+    assets:
+      required: []
+      accept: []
