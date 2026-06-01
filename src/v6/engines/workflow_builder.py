@@ -126,6 +126,160 @@ def build_flux_dev_workflow(
     return workflow
 
 
+def build_flux_ipadapter_workflow(
+    prompt: str,
+    reference_image: str,
+    negative_prompt: str = "",
+    width: int = 1024,
+    height: int = 1024,
+    steps: int = 28,
+    cfg_scale: float = 3.5,
+    weight: float = 0.8,
+    start_percent: float = 0.0,
+    end_percent: float = 0.8,
+    seed: int | None = None,
+    filename_prefix: str = "flux-ipadapter",
+    unet_name: str = "flux1-dev-fp8.safetensors",
+    weight_dtype: str = "fp8_e4m3fn",
+    clip_name1: str = "clip_l/model.safetensors",
+    clip_name2: str = "t5xxl_fp16/model-00001-of-00002.safetensors",
+    clip_type: str = "flux",
+    vae_name: str = "flux_vae/diffusion_pytorch_model.safetensors",
+    ipadapter_name: str = "ip-adapter.bin",
+    clip_vision_name: str = "google/siglip-so400m-patch14-384",
+) -> dict[str, Any]:
+    """Build a FLUX Dev FP8 + IP-Adapter ComfyUI workflow.
+
+    Loads a reference image via IP-Adapter to inject style/composition into generation.
+    Uses the same FLUX Dev FP8 components as build_flux_dev_workflow, plus:
+    - IPAdapterFluxLoader (IP-Adapter weights + SIGLIP vision encoder)
+    - LoadImage (reference image)
+    - ApplyIPAdapterFlux (applies IP-Adapter to UNET model)
+
+    Args:
+        prompt: Text prompt for image generation.
+        reference_image: Filename of reference image in ComfyUI input/ directory.
+        negative_prompt: Negative prompt (FLUX ignores, kept for API compat).
+        width: Image width (default 1024).
+        height: Image height (default 1024).
+        steps: Number of inference steps (default 28 for Dev).
+        cfg_scale: Guidance scale (default 3.5 for FLUX Dev).
+        weight: IP-Adapter influence weight (0.0-1.0, default 0.8).
+        start_percent: When IP-Adapter starts applying (0.0-1.0).
+        end_percent: When IP-Adapter stops applying (0.0-1.0).
+        seed: Random seed. Random if None.
+        filename_prefix: Output filename prefix.
+        unet_name: UNET model filename.
+        weight_dtype: UNET weight dtype.
+        clip_name1: CLIP-L model filename.
+        clip_name2: T5-XXL model filename.
+        clip_type: DualCLIPLoader type.
+        vae_name: VAE model filename.
+        ipadapter_name: IP-Adapter weights filename.
+        clip_vision_name: SIGLIP vision encoder name.
+
+    Returns:
+        ComfyUI API-format workflow dict.
+    """
+    import random
+    if seed is None:
+        seed = random.randint(0, 2**32 - 1)
+
+    workflow = {
+        "1": {  # UNETLoader
+            "class_type": "UNETLoader",
+            "inputs": {
+                "unet_name": unet_name,
+                "weight_dtype": weight_dtype,
+            },
+        },
+        "2": {  # DualCLIPLoader
+            "class_type": "DualCLIPLoader",
+            "inputs": {
+                "clip_name1": clip_name1,
+                "clip_name2": clip_name2,
+                "type": clip_type,
+            },
+        },
+        "3": {  # VAELoader
+            "class_type": "VAELoader",
+            "inputs": {
+                "vae_name": vae_name,
+            },
+        },
+        "4": {  # CLIPTextEncode
+            "class_type": "CLIPTextEncode",
+            "inputs": {
+                "text": prompt,
+                "clip": ["2", 0],
+            },
+        },
+        "5": {  # EmptySD3LatentImage
+            "class_type": "EmptySD3LatentImage",
+            "inputs": {
+                "width": width,
+                "height": height,
+                "batch_size": 1,
+            },
+        },
+        "6": {  # KSampler (uses IP-Adapter-modified model)
+            "class_type": "KSampler",
+            "inputs": {
+                "seed": seed,
+                "steps": steps,
+                "cfg": cfg_scale,
+                "sampler_name": "euler",
+                "scheduler": "simple",
+                "denoise": 1.0,
+                "model": ["12", 0],  # ApplyIPAdapterFlux output
+                "positive": ["4", 0],
+                "negative": ["4", 0],
+                "latent_image": ["5", 0],
+            },
+        },
+        "7": {  # VAEDecode
+            "class_type": "VAEDecode",
+            "inputs": {
+                "samples": ["6", 0],
+                "vae": ["3", 0],
+            },
+        },
+        "8": {  # SaveImage
+            "class_type": "SaveImage",
+            "inputs": {
+                "filename_prefix": filename_prefix,
+                "images": ["7", 0],
+            },
+        },
+        "10": {  # IPAdapterFluxLoader
+            "class_type": "IPAdapterFluxLoader",
+            "inputs": {
+                "ipadapter": ipadapter_name,
+                "clip_vision": clip_vision_name,
+                "provider": "cuda",
+            },
+        },
+        "11": {  # LoadImage
+            "class_type": "LoadImage",
+            "inputs": {
+                "image": reference_image,
+            },
+        },
+        "12": {  # ApplyIPAdapterFlux
+            "class_type": "ApplyIPAdapterFlux",
+            "inputs": {
+                "model": ["1", 0],
+                "ipadapter_flux": ["10", 0],
+                "image": ["11", 0],
+                "weight": weight,
+                "start_percent": start_percent,
+                "end_percent": end_percent,
+            },
+        },
+    }
+    return workflow
+
+
 def build_txt2img_workflow(
     prompt: str,
     negative_prompt: str = "",

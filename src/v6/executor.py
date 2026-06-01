@@ -143,6 +143,28 @@ class TaskExecutor:
                         seed=task.params.get("seed"),
                     )
                     logger.info("Auto-built FLUX Dev workflow for task %s", task.task_id)
+                elif task.params.get("model") == "flux-dev-ipa":
+                    from src.v6.engines.workflow_builder import build_flux_ipadapter_workflow
+                    ref_img = task.params.get("reference_image", "")
+                    if not ref_img:
+                        logger.error("flux-dev-ipa requires 'reference_image' param, task %s", task.task_id)
+                        await store.update(task.task_id, status=TaskStatus.FAILED, error="flux-dev-ipa requires 'reference_image' param")
+                        return
+                    workflow = build_flux_ipadapter_workflow(
+                        prompt=task.params.get("prompt", ""),
+                        reference_image=ref_img,
+                        negative_prompt=task.params.get("negative_prompt", ""),
+                        width=task.params.get("width", 1024),
+                        height=task.params.get("height", 1024),
+                        steps=task.params.get("steps", 28),
+                        cfg_scale=task.params.get("cfg_scale", 3.5),
+                        weight=task.params.get("weight", 0.8),
+                        start_percent=task.params.get("start_percent", 0.0),
+                        end_percent=task.params.get("end_percent", 0.8),
+                        seed=task.params.get("seed"),
+                        filename_prefix=task.params.get("filename_prefix", "flux-ipadapter"),
+                    )
+                    logger.info("Auto-built FLUX Dev + IP-Adapter workflow for task %s", task.task_id)
                 else:
                     from src.v6.engines.workflow_builder import build_txt2img_workflow
                     workflow = build_txt2img_workflow(
