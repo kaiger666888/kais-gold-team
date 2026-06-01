@@ -260,6 +260,17 @@ class DockerAPIEngine(BaseEngine):
                 (output_dir / f"output.{ext}").write_bytes(base64.b64decode(img_data))
                 return {"job_id": f"{self._config.name}-{task_id[:8]}", "output_saved": True}
 
+            # Multiple images response (base64 array) — FLUX style
+            if data.get("images"):
+                import re
+                for idx, img_b64 in enumerate(data["images"]):
+                    if img_b64.startswith("data:"):
+                        img_b64 = re.sub(r"^data:image/\w+;base64,", "", img_b64)
+                    ext = params.get("output_format", "png")
+                    suffix = f"_{idx}" if len(data["images"]) > 1 else ""
+                    (output_dir / f"output{suffix}.{ext}").write_bytes(base64.b64decode(img_b64))
+                return {"job_id": f"{self._config.name}-{task_id[:8]}", "output_saved": True, "num_images": len(data["images"])}
+
             # File path response (engine saved to output_path)
             if data.get("output_path"):
                 return {"job_id": f"{self._config.name}-{task_id[:8]}", "output_path": data["output_path"]}
