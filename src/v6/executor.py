@@ -131,6 +131,18 @@ class TaskExecutor:
                         task_id=task.task_id,
                     )
                     logger.info("Auto-built TTS workflow for task %s", task.task_id)
+                elif task.params.get("model") == "flux-dev":
+                    from src.v6.engines.workflow_builder import build_flux_dev_workflow
+                    workflow = build_flux_dev_workflow(
+                        prompt=task.params.get("prompt", ""),
+                        negative_prompt=task.params.get("negative_prompt", ""),
+                        width=task.params.get("width", 1024),
+                        height=task.params.get("height", 1024),
+                        steps=task.params.get("steps", 28),
+                        cfg_scale=task.params.get("cfg_scale", 3.5),
+                        seed=task.params.get("seed"),
+                    )
+                    logger.info("Auto-built FLUX Dev workflow for task %s", task.task_id)
                 else:
                     from src.v6.engines.workflow_builder import build_txt2img_workflow
                     workflow = build_txt2img_workflow(

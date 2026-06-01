@@ -2,12 +2,128 @@
 
 Supports:
   - ComfyUI txt2img workflows (via build_txt2img_workflow)
+  - ComfyUI FLUX Dev FP8 workflows (via build_flux_dev_workflow)
   - TTS workflows (via build_tts_workflow) — subprocess-based, not ComfyUI
 """
 from __future__ import annotations
 
 import os
 from typing import Any
+
+
+def build_flux_dev_workflow(
+    prompt: str,
+    negative_prompt: str = "",
+    width: int = 1024,
+    height: int = 1024,
+    steps: int = 28,
+    cfg_scale: float = 3.5,
+    seed: int | None = None,
+    filename_prefix: str = "flux-dev",
+    unet_name: str = "flux1-dev-fp8.safetensors",
+    weight_dtype: str = "fp8_e4m3fn",
+    clip_name1: str = "clip_l/model.safetensors",
+    clip_name2: str = "t5xxl_fp16/model-00001-of-00002.safetensors",
+    clip_type: str = "flux",
+    vae_name: str = "flux_vae/diffusion_pytorch_model.safetensors",
+) -> dict[str, Any]:
+    """Build a FLUX Dev FP8 ComfyUI workflow via separate loaders.
+
+    Uses UNETLoader + DualCLIPLoader + VAELoader + KSampler + VAEDecode + SaveImage.
+    This avoids CheckpointLoaderSimple (which requires a single-file checkpoint)
+    and instead loads FLUX components individually for better memory control.
+
+    Args:
+        prompt: Text prompt for image generation.
+        negative_prompt: Negative prompt (FLUX doesn't use negative, but kept for API compat).
+        width: Image width (default 1024, must be multiple of 16).
+        height: Image height (default 1024, must be multiple of 16).
+        steps: Number of inference steps (default 28 for Dev).
+        cfg_scale: Guidance scale (default 3.5 for FLUX Dev).
+        seed: Random seed. Random if None.
+        filename_prefix: Output filename prefix.
+        unet_name: UNET model filename in ComfyUI unet/ directory.
+        weight_dtype: UNET weight dtype (fp8_e4m3fn or default).
+        clip_name1: CLIP-L model filename (text_encoder_1).
+        clip_name2: T5-XXL model filename (text_encoder_2).
+        clip_type: DualCLIPLoader type ("flux").
+        vae_name: VAE model filename.
+
+    Returns:
+        ComfyUI API-format workflow dict.
+    """
+    import random
+    if seed is None:
+        seed = random.randint(0, 2**32 - 1)
+
+    workflow = {
+        "1": {  # UNETLoader
+            "class_type": "UNETLoader",
+            "inputs": {
+                "unet_name": unet_name,
+                "weight_dtype": weight_dtype,
+            },
+        },
+        "2": {  # DualCLIPLoader
+            "class_type": "DualCLIPLoader",
+            "inputs": {
+                "clip_name1": clip_name1,
+                "clip_name2": clip_name2,
+                "type": clip_type,
+            },
+        },
+        "3": {  # VAELoader
+            "class_type": "VAELoader",
+            "inputs": {
+                "vae_name": vae_name,
+            },
+        },
+        "4": {  # CLIPTextEncode
+            "class_type": "CLIPTextEncode",
+            "inputs": {
+                "text": prompt,
+                "clip": ["2", 0],
+            },
+        },
+        "5": {  # EmptySD3LatentImage (FLUX uses SD3 latent format)
+            "class_type": "EmptySD3LatentImage",
+            "inputs": {
+                "width": width,
+                "height": height,
+                "batch_size": 1,
+            },
+        },
+        "6": {  # KSampler
+            "class_type": "KSampler",
+            "inputs": {
+                "seed": seed,
+                "steps": steps,
+                "cfg": cfg_scale,
+                "sampler_name": "euler",
+                "scheduler": "simple",
+                "denoise": 1.0,
+                "model": ["1", 0],
+                "positive": ["4", 0],
+                "negative": ["4", 0],  # FLUX ignores negative prompt
+                "latent_image": ["5", 0],
+            },
+        },
+        "7": {  # VAEDecode
+            "class_type": "VAEDecode",
+            "inputs": {
+                "samples": ["6", 0],
+                "vae": ["3", 0],
+            },
+        },
+        "8": {  # SaveImage
+            "class_type": "SaveImage",
+            "inputs": {
+                "filename_prefix": filename_prefix,
+                "images": ["7", 0],
+            },
+        },
+    }
+    return workflow
 
 
 def build_txt2img_workflow(

@@ -31,7 +31,7 @@ VRAM_ESTIMATES: dict[str, int] = {
     "hunyuan3d": 16000,
     "latentsync": 16000,
     "acestep": 16000,
-    "flux": 8000,
+    "flux": 22000,
     "sdxl": 8000,
     "hunyuan3d_mini": 8000,
     "stable_audio": 8000,

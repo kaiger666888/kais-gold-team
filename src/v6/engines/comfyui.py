@@ -65,7 +65,7 @@ class ComfyUIEngine(BaseEngine):
             max_duration_sec=30.0,
             vram_total_mb=24576,
             vram_available_mb=24576,
-            models=["wan2.2-14b", "flux-dev", "real-esrgan", "facefusion"],
+            models=["flux-dev-fp8", "wan2.2-14b", "ltx-2.3-fp8", "real-esrgan", "facefusion"],
         )
 
     async def start(self) -> None:
