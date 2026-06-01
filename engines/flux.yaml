@@ -1,6 +1,9 @@
 # FLUX Text-to-Image Engine
 # Local image: kais-flux:latest
-# GPU: RTX 3090, ~12GB VRAM
+# GPU: RTX 3090 24GB, sequential_cpu_offload
+# Model: FLUX.1 Schnell bf16 (official)
+# Speed: ~17s/image (warm), ~47s first (cold)
+# Prompt: /data/models/flux1-schnell
 
 name: flux
 engine: flux
@@ -8,12 +11,24 @@ docker_image: kais-flux:latest
 api_port: 8080
 requires_gpu: true
 mode: api
+environment:
+ FLUX_MODEL_BASE: /data/models
+gpu_device: "1"
+volumes:
+  /data/models:/data/models:ro
+health_endpoint: /health
+
+reuse: false  # keep container alive for caching
+
+# Schnell: 4 steps, no guidance (distilled)
+# Dev: 20-50 steps, guidance_scale 3.5 (not available on this hardware)
+default_variant: schnell
 
 task_types:
   flux_draw:
     submit_endpoint: /generate
     health_endpoint: /health
-    poll_timeout: 120
+    poll_timeout: 180
     poll_interval: 2.0
     params:
       prompt:
@@ -22,6 +37,9 @@ task_types:
       negative_prompt:
         type: string
         default: ""
+      variant:
+        type: string
+        default: "schnell"
       width:
         type: int
         default: 1024
@@ -30,10 +48,16 @@ task_types:
         default: 1024
       num_inference_steps:
         type: int
-        default: 28
+        default: 4
       guidance_scale:
         type: float
-        default: 3.5
+        default: 0.0
+      seed:
+        type: int
+        default: -1
+      num_images:
+        type: int
+        default: 1
     assets:
       required: []
       accept: []
