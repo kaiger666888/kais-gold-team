@@ -1,0 +1,25 @@
+# TRELLIS 2 extension layer for ComfyUI container
+# Build on top of existing ComfyUI image, adds TRELLIS + RMBG custom nodes
+
+ARG BASE_IMAGE=kais-comfyui:latest
+FROM ${BASE_IMAGE}
+
+LABEL maintainer="kais-hub"
+LABEL description="ComfyUI + TRELLIS 2 + RMBG-2.0 for text/image-to-3D"
+
+# Install TRELLIS custom node
+RUN cd /app/ComfyUI/custom_nodes && \
+    git clone https://github.com/PozzettiAndrea/ComfyUI-TRELLIS.git && \
+    cd ComfyUI-TRELLIS && \
+    pip install -r requirements.txt
+
+# Install RMBG-2.0 for background removal
+RUN cd /app/ComfyUI/custom_nodes && \
+    git clone https://github.com/zhanghao735/ComfyUI-RMBG-2.0.git && \
+    cd ComfyUI-RMBG-2.0 && \
+    pip install -r requirements.txt
+
+# Verify installation
+RUN python -c "import trellis; print('TRELLIS OK')" 2>/dev/null || echo "TRELLIS module import check (may need runtime GPU)"
+
+VOLUME ["/data/models/trellis"]

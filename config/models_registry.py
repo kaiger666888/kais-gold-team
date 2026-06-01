@@ -72,14 +72,24 @@ MODELS: dict[str, dict] = {
         "runtime": "video-runtime",
         "triton_hash": "wan13b_i2v_fp16_sm86",
     },
+    # ── TRELLIS 2 (Text/Image-to-3D) ──
     "trellis": {
-        "vram": 16000,
-        "precision": "bf16",
+        "vram": 12400,
+        "precision": "fp16",
         "category": "Heavy",
         "combo_id": None,
-        "weight_path": "microsoft/TRELLIS",
-        "runtime": "3d-runtime",
+        "weight_path": "microsoft/TRELLIS.2-4B",
+        "runtime": "comfyui-runtime",
         "triton_hash": "trellis_fp16_sm86",
+    },
+    "trellis_preview": {
+        "vram": 6800,
+        "precision": "fp16",
+        "category": "Heavy",
+        "combo_id": None,
+        "weight_path": "microsoft/TRELLIS.2-4B",
+        "runtime": "comfyui-runtime",
+        "triton_hash": "trellis_preview_fp16_sm86",
     },
     "hunyuan3d2": {
         "vram": 20000,

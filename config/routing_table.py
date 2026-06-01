@@ -307,6 +307,23 @@ ROUTING_TABLE: dict[int, dict] = {
         "overflow": None,
         "cpu": {"tool": "blender", "note": "CPU Blender"},
     },
+    # TRELLIS 2 文生3D
+    37: {
+        "name": "文/图生3D（生产）",
+        "model_id": "trellis",
+        "preview": {"gpu": "3090", "slot": "heavy", "note": "TRELLIS 1024 prod"},
+        "heavy": {"gpu": "3090", "slot": "heavy", "note": "TRELLIS 1024 prod"},
+        "overflow": None,
+        "cpu": None,
+    },
+    38: {
+        "name": "文/图生3D（预览）",
+        "model_id": "trellis_preview",
+        "preview": {"gpu": "3090", "slot": "light", "note": "TRELLIS 512 preview"},
+        "heavy": {"gpu": "3090", "slot": "light", "note": "TRELLIS 512 preview"},
+        "overflow": {"gpu": "3060ti", "note": "TRELLIS 512 on 3060Ti"},
+        "cpu": None,
+    },
 }
 
 

@@ -1,0 +1,146 @@
+# TRELLIS 2 Image-to-3D / Text-to-3D Engine
+# Local image: kais-comfyui:latest (shared ComfyUI container with FLUX)
+# GPU: RTX 3090 24GB (production 1024) or RTX 3060Ti 8GB (preview 512)
+# Model: microsoft/TRELLIS.2-4B
+# Custom Node: PozzettiAndrea/ComfyUI-TRELLIS
+# Preprocessing: RMBG-2.0 background removal
+# Speed: 512->~4s, 1024->~15-25s, 1536->~60-90s
+
+name: trellis
+engine: trellis
+docker_image: kais-comfyui:latest
+api_port: 8188
+requires_gpu: true
+mode: comfyui
+environment:
+  TRELLIS_MODEL_DIR: /data/models/trellis
+gpu_device: "1"
+volumes:
+  /data/models:/data/models:ro
+health_endpoint: /system_stats
+
+reuse: true  # share ComfyUI container with FLUX
+
+default_variant: production
+
+task_types:
+  text_to_3d:
+    submit_endpoint: /prompt
+    health_endpoint: /system_stats
+    poll_timeout: 300
+    poll_interval: 2.0
+    description: FLUX text-to-image then TRELLIS image-to-3D, serial stages
+    params:
+      prompt:
+        type: string
+        required: true
+        description: Text prompt for FLUX image generation
+      negative_prompt:
+        type: string
+        default: ""
+      flux_steps:
+        type: int
+        default: 20
+      flux_cfg:
+        type: float
+        default: 3.5
+      flux_width:
+        type: int
+        default: 1024
+      flux_height:
+        type: int
+        default: 1024
+      resolution:
+        type: int
+        default: 1024
+        description: TRELLIS 3D resolution (512/1024/1536)
+      trellis_steps:
+        type: int
+        default: 25
+      trellis_cfg:
+        type: float
+        default: 7.5
+      shape_guidance:
+        type: float
+        default: 0.5
+      texture_resolution:
+        type: int
+        default: 1024
+      pbr_channels:
+        type: string
+        default: "full"
+        description: PBR channels: color or full
+      remove_background:
+        type: bool
+        default: true
+      output_format:
+        type: string
+        default: "glb"
+        description: Output format: glb, ply, fbx
+      seed:
+        type: int
+        default: -1
+    assets:
+      required: []
+      accept: [png, jpg, jpeg]
+
+  image_to_3d:
+    submit_endpoint: /prompt
+    health_endpoint: /system_stats
+    poll_timeout: 300
+    poll_interval: 2.0
+    description: Direct image to 3D via TRELLIS
+    params:
+      image_path:
+        type: string
+        required: true
+      resolution:
+        type: int
+        default: 1024
+      trellis_steps:
+        type: int
+        default: 25
+      trellis_cfg:
+        type: float
+        default: 7.5
+      shape_guidance:
+        type: float
+        default: 0.5
+      texture_resolution:
+        type: int
+        default: 1024
+      pbr_channels:
+        type: string
+        default: "full"
+      remove_background:
+        type: bool
+        default: true
+      output_format:
+        type: string
+        default: "glb"
+      seed:
+        type: int
+        default: -1
+    assets:
+      required: [image]
+      accept: [png, jpg, jpeg]
+
+  preview_3d:
+    submit_endpoint: /prompt
+    health_endpoint: /system_stats
+    poll_timeout: 120
+    poll_interval: 2.0
+    description: Fast 512 preview for 3060Ti or quick iteration
+    params:
+      image_path:
+        type: string
+        required: true
+      steps:
+        type: int
+        default: 12
+      output_format:
+        type: string
+        default: "glb"
+    assets:
+      required: [image]
+      accept: [png, jpg, jpeg]

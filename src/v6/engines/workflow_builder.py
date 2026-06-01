@@ -397,3 +397,289 @@ def build_tts_workflow(
         "backend": backend,
         "output_path": output_path,
     }
+
+
+def build_trellis_image_to_3d_workflow(
+    image_name: str,
+    resolution: int = 1024,
+    steps: int = 25,
+    cfg_scale: float = 7.5,
+    shape_guidance: float = 0.5,
+    texture_resolution: int = 1024,
+    pbr_channels: str = "full",
+    remove_background: bool = True,
+    output_format: str = "glb",
+    seed: int | None = None,
+    filename_prefix: str = "trellis_3d",
+) -> dict[str, Any]:
+    """Build a TRELLIS 2 image-to-3D ComfyUI workflow.
+
+    Preprocessing chain: LoadImage -> Resize -> RMBG-2.0 -> TRELLIS ImageTo3D -> TextureBake -> Export
+
+    Args:
+        image_name: Input image filename (must exist in ComfyUI input/ directory).
+        resolution: 3D voxel resolution (512, 1024, or 1536).
+        steps: TRELLIS denoising steps.
+        cfg_scale: CFG scale for TRELLIS.
+        shape_guidance: Shape guidance strength.
+        texture_resolution: Texture bake resolution.
+        pbr_channels: "color" (color only) or "full" (color + normal + roughness + metallic).
+        remove_background: Whether to use RMBG-2.0 for background removal.
+        output_format: Output format (glb, ply, fbx).
+        seed: Random seed. Random if None.
+        filename_prefix: Output filename prefix.
+
+    Returns:
+        ComfyUI API-format workflow dict.
+    """
+    import random
+    if seed is None or seed < 0:
+        seed = random.randint(0, 2**32 - 1)
+
+    class_type = "TRELLISImageTo3D"
+    nodes: dict[str, Any] = {}
+
+    # Node 1: Load Image
+    nodes["1"] = {
+        "class_type": "LoadImage",
+        "inputs": {"image": image_name},
+    }
+
+    # Node 2: Image Resize
+    nodes["2"] = {
+        "class_type": "ImageResize",
+        "inputs": {
+            "image": ["1", 0],
+            "width": resolution,
+            "height": resolution,
+            "method": "lanczos",
+            "crop": "center",
+        },
+    }
+
+    # Node 3: RMBG-2.0 Background Removal (conditional)
+    if remove_background:
+        nodes["3"] = {
+            "class_type": "RemoveBG",
+            "inputs": {"image": ["2", 0]},
+        }
+        trellis_image_input = ["3", 0]
+    else:
+        trellis_image_input = ["2", 0]
+
+    # Node 4: TRELLIS Image to 3D
+    nodes["4"] = {
+        "class_type": class_type,
+        "inputs": {
+            "image": trellis_image_input,
+            "model": "microsoft/TRELLIS.2-4B",
+            "resolution": resolution,
+            "steps": steps,
+            "cfg_scale": cfg_scale,
+            "shape_guidance": shape_guidance,
+            "texture_resolution": texture_resolution,
+            "pbr_channels": pbr_channels,
+            "low_vram": False,
+            "seed": seed,
+            "fp16": True,
+        },
+    }
+
+    # Node 5: Texture Bake (for full PBR)
+    if pbr_channels == "full":
+        nodes["5"] = {
+            "class_type": "TRELLISTextureBake",
+            "inputs": {
+                "mesh": ["4", 0],
+                "texture_image": ["4", 1],
+                "texture_resolution": texture_resolution,
+                "pbr_channels": "full",
+            },
+        }
+        export_mesh_input = ["5", 0]
+    else:
+        export_mesh_input = ["4", 0]
+
+    # Node 6: Export GLB
+    nodes["6"] = {
+        "class_type": "TRELLISExport",
+        "inputs": {
+            "mesh": export_mesh_input,
+            "format": output_format,
+            "embed_textures": True,
+        },
+    }
+
+    # Node 7: Save output
+    nodes["7"] = {
+        "class_type": "Save",
+        "inputs": {
+            "data": ["6", 0],
+            "filename_prefix": filename_prefix,
+        },
+    }
+
+    return nodes
+
+
+def build_flux_trellis_full_workflow(
+    prompt: str,
+    negative_prompt: str = "",
+    flux_steps: int = 20,
+    flux_cfg: float = 3.5,
+    width: int = 1024,
+    height: int = 1024,
+    trellis_resolution: int = 1024,
+    trellis_steps: int = 25,
+    trellis_cfg: float = 7.5,
+    shape_guidance: float = 0.5,
+    texture_resolution: int = 1024,
+    pbr_channels: str = "full",
+    output_format: str = "glb",
+    seed: int | None = None,
+) -> dict[str, Any]:
+    """Build a FLUX -> TRELLIS full pipeline ComfyUI workflow.
+
+    Serial execution: FLUX generates image, releases VRAM, then TRELLIS converts to 3D.
+    Total estimated time on RTX 3090: ~30-40s (FLUX 10-15s + TRELLIS 15-25s).
+
+    Args:
+        prompt: Text prompt for FLUX image generation.
+        negative_prompt: Negative prompt.
+        flux_steps: FLUX inference steps (default 20).
+        flux_cfg: FLUX guidance scale (default 3.5).
+        width/height: Image dimensions.
+        trellis_resolution: TRELLIS 3D resolution (512/1024).
+        trellis_steps: TRELLIS denoising steps (default 25).
+        trellis_cfg: TRELLIS CFG scale.
+        shape_guidance: TRELLIS shape guidance.
+        texture_resolution: Texture resolution.
+        pbr_channels: PBR channels (color/full).
+        output_format: 3D output format.
+        seed: Random seed.
+
+    Returns:
+        ComfyUI API-format workflow dict.
+    """
+    import random
+    if seed is None or seed < 0:
+        seed = random.randint(0, 2**32 - 1)
+
+    flux_seed = seed
+    trellis_seed = seed + 1 if seed > 0 else random.randint(0, 2**32 - 1)
+
+    nodes: dict[str, Any] = {}
+
+    # ── Stage A: FLUX Text-to-Image ──
+    nodes["10"] = {
+        "class_type": "UNETLoader",
+        "inputs": {
+            "unet_name": "flux1-dev-fp8.safetensors",
+            "weight_dtype": "fp8_e4m3fn",
+        },
+    }
+    nodes["11"] = {
+        "class_type": "DualCLIPLoader",
+        "inputs": {
+            "clip_name1": "clip_l/model.safetensors",
+            "clip_name2": "t5xxl_fp16/model-00001-of-00002.safetensors",
+            "type": "flux",
+        },
+    }
+    nodes["12"] = {
+        "class_type": "CLIPTextEncode",
+        "inputs": {
+            "text": prompt,
+            "clip": ["11", 0],
+        },
+    }
+    nodes["13"] = {
+        "class_type": "EmptySD3LatentImage",
+        "inputs": {
+            "width": width,
+            "height": height,
+            "batch_size": 1,
+        },
+    }
+    nodes["14"] = {
+        "class_type": "KSampler",
+        "inputs": {
+            "model": ["10", 0],
+            "positive": ["12", 0],
+            "negative": ["12", 0],
+            "latent_image": ["13", 0],
+            "seed": flux_seed,
+            "steps": flux_steps,
+            "cfg": flux_cfg,
+            "sampler_name": "euler",
+            "scheduler": "simple",
+            "denoise": 1.0,
+        },
+    }
+    nodes["15"] = {
+        "class_type": "VAELoader",
+        "inputs": {"vae_name": "flux_vae/diffusion_pytorch_model.safetensors"},
+    }
+    nodes["16"] = {
+        "class_type": "VAEDecode",
+        "inputs": {
+            "samples": ["14", 0],
+            "vae": ["15", 0],
+        },
+    }
+    nodes["17"] = {
+        "class_type": "SaveImage",
+        "inputs": {
+            "images": ["16", 0],
+            "filename_prefix": "flux_trellis_input",
+        },
+    }
+
+    # ── Stage B: TRELLIS Image-to-3D (serial after VRAM release) ──
+    nodes["20"] = {
+        "class_type": "ImageResize",
+        "inputs": {
+            "image": ["16", 0],
+            "width": trellis_resolution,
+            "height": trellis_resolution,
+            "method": "lanczos",
+            "crop": "center",
+        },
+    }
+    nodes["21"] = {
+        "class_type": "RemoveBG",
+        "inputs": {"image": ["20", 0]},
+    }
+    nodes["22"] = {
+        "class_type": "TRELLISImageTo3D",
+        "inputs": {
+            "image": ["21", 0],
+            "model": "microsoft/TRELLIS.2-4B",
+            "resolution": trellis_resolution,
+            "steps": trellis_steps,
+            "cfg_scale": trellis_cfg,
+            "shape_guidance": shape_guidance,
+            "texture_resolution": texture_resolution,
+            "pbr_channels": pbr_channels,
+            "low_vram": False,
+            "seed": trellis_seed,
+            "fp16": True,
+        },
+    }
+    nodes["23"] = {
+        "class_type": "TRELLISExport",
+        "inputs": {
+            "mesh": ["22", 0],
+            "format": output_format,
+            "embed_textures": True,
+        },
+    }
+    nodes["24"] = {
+        "class_type": "Save",
+        "inputs": {
+            "data": ["23", 0],
+            "filename_prefix": "flux_trellis_3d",
+        },
+    }
+
+    return nodes
