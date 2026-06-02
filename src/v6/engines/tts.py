@@ -1,4 +1,4 @@
-"""TTS Engine — runs CosyVoice / edge-tts via subprocess for gold-team V6.
+"""TTS Engine — runs CosyVoice3 / edge-tts via subprocess for gold-team V6.
 
 Unlike ComfyUIEngine which talks to ComfyUI via HTTP, this engine invokes
 the standalone ``scripts/tts_infer.py`` script directly. This avoids the need
@@ -8,6 +8,12 @@ Lifecycle:
     submit() → records params, returns job_id
     poll()   → checks subprocess status
     get_output() → returns artifact URLs for completed jobs
+
+Supported CosyVoice3 modes:
+    - instruct2: Natural language instruction control (default)
+    - zero_shot: Voice cloning with reference audio + transcript
+    - cross_lingual: Cross-language synthesis
+    - vc: Voice conversion
 """
 from __future__ import annotations
 
@@ -51,7 +57,8 @@ class TTSJob:
 class TTSEngine(BaseEngine):
     """TTS engine that runs ``scripts/tts_infer.py`` via subprocess.
 
-    Supports both CosyVoice (if installed) and edge-tts (fallback).
+    Supports both CosyVoice3 (if installed) and edge-tts (fallback).
+    All CosyVoice3 parameters are transparently forwarded.
     """
 
     def __init__(self, output_root: str = OUTPUT_ROOT) -> None:
@@ -62,7 +69,7 @@ class TTSEngine(BaseEngine):
 
     @property
     def name(self) -> str:
-        return "TTS Engine (CosyVoice/edge-tts)"
+        return "TTS Engine (CosyVoice3/edge-tts)"
 
     @property
     def engine_id(self) -> str:
@@ -75,7 +82,7 @@ class TTSEngine(BaseEngine):
             max_duration_sec=300.0,
             vram_total_mb=6144,
             vram_available_mb=6144,
-            models=["cosyvoice-2-0.5b", "edge-tts"],
+            models=["cosyvoice-3-0.5b-rl", "edge-tts"],
         )
 
     async def start(self) -> None:
@@ -96,7 +103,21 @@ class TTSEngine(BaseEngine):
         """Submit a TTS task.
 
         Args:
-            workflow: Dict with keys: text, voice, speed, backend, output_path.
+            workflow: Dict with TTS parameters. Required keys depend on mode:
+              - text (str, required): Text to synthesize (except vc mode)
+              - mode (str, optional): instruct2/zero_shot/cross_lingual/vc (default: instruct2)
+              - voice (str, optional): Preset voice name (default: default)
+              - speed (float, optional): Speech speed 0.5-2.0 (default: 1.0)
+              - backend (str, optional): cosyvoice/edge-tts/auto (default: auto)
+              - output_path (str, optional): Output file path
+              - instruct (str, optional): Custom instruction text (overrides voice/emotion/language)
+              - emotion (str, optional): happy/sad/angry/neutral (default: neutral)
+              - language (str, optional): Language code zh/en/ja/ko/de/... (default: auto)
+              - prompt_wav (str, optional): Reference audio for instruct2 voice stamping
+              - ref_audio (str, optional): Reference audio for zero_shot/cross_lingual/vc
+              - ref_text (str, optional): Reference transcript for zero_shot (required)
+              - prompt_audio (str, optional): Source audio for vc mode (required)
+              - stream (bool, optional): Enable streaming output (default: false)
             params: Optional dict with task_id for output naming.
 
         Returns:
@@ -106,41 +127,85 @@ class TTSEngine(BaseEngine):
         params = params or {}
         task_id = params.get("task_id", job_id)
 
-        # Extract TTS params from workflow
+        # === Extract required params ===
         text = workflow.get("text", "")
         voice = workflow.get("voice", "default")
         speed = workflow.get("speed", 1.0)
         backend = workflow.get("backend", "auto")
+        mode = workflow.get("mode", "instruct2")
 
-        if not text:
-            raise ValueError("TTS workflow requires 'text' parameter")
+        # Validate required params per mode
+        if mode == "vc":
+            if not workflow.get("ref_audio"):
+                raise ValueError("vc mode requires 'ref_audio' (target voice)")
+            if not workflow.get("prompt_audio"):
+                raise ValueError("vc mode requires 'prompt_audio' (source content)")
+        elif mode == "zero_shot":
+            if not text:
+                raise ValueError("TTS requires 'text' parameter")
+            if not workflow.get("ref_audio"):
+                raise ValueError("zero_shot mode requires 'ref_audio' (voice to clone)")
+            if not workflow.get("ref_text"):
+                raise ValueError("zero_shot mode requires 'ref_text' (reference transcript)")
+        else:
+            if not text:
+                raise ValueError("TTS requires 'text' parameter")
 
-        # Determine output path
+        # === Determine output path ===
         output_path = workflow.get("output_path", "")
         if not output_path:
             output_path = os.path.join(self._output_root, task_id, "voice.wav")
 
+        # Store all params for debugging
         job = TTSJob(job_id=job_id, params={
             "text": text,
             "voice": voice,
             "speed": speed,
             "backend": backend,
+            "mode": mode,
             "output_path": output_path,
             "task_id": task_id,
+            **{k: v for k, v in workflow.items() if k not in ("text", "voice", "speed", "backend", "mode", "output_path")},
         })
         self._jobs[job_id] = job
 
-        # Start subprocess
+        # === Build subprocess command ===
         cmd = [
             self._python, self._script_path,
-            "--text", text,
             "--output", output_path,
+            "--mode", mode,
             "--voice", voice,
             "--speed", str(speed),
             "--backend", backend,
         ]
 
-        logger.info("TTS job %s: submitting '%s' (voice=%s, backend=%s)", job_id, text[:50], voice, backend)
+        # Add text (vc mode doesn't need it, but script handles empty string)
+        if text:
+            cmd.extend(["--text", text])
+
+        # Add optional CosyVoice3 params
+        _optional_str = [
+            ("instruct", "instruct"),
+            ("emotion", "emotion"),
+            ("language", "language"),
+            ("prompt_wav", "prompt-wav"),
+            ("ref_audio", "ref-audio"),
+            ("ref_text", "ref-text"),
+            ("prompt_audio", "prompt-audio"),
+        ]
+        for workflow_key, cli_flag in _optional_str:
+            val = workflow.get(workflow_key, "")
+            if val:
+                cmd.extend([f"--{cli_flag}", str(val)])
+
+        # Add boolean flags
+        if workflow.get("stream", False):
+            cmd.append("--stream")
+
+        logger.info(
+            "TTS job %s: submitting (mode=%s, voice=%s, backend=%s, text=%s)",
+            job_id, mode, voice, backend, text[:50],
+        )
 
         try:
             process = await asyncio.create_subprocess_exec(
@@ -182,8 +247,8 @@ class TTSEngine(BaseEngine):
                 job.backend = result.get("backend", "unknown")
                 job.duration_sec = result.get("duration_sec", round(elapsed, 2))
                 logger.info(
-                    "TTS job %s completed in %.1fs (backend=%s, output=%s)",
-                    job.job_id, elapsed, job.backend, job.output_path,
+                    "TTS job %s completed in %.1fs (backend=%s, mode=%s, output=%s)",
+                    job.job_id, elapsed, job.backend, job.params.get("mode", "?"), job.output_path,
                 )
             else:
                 error_output = stderr.decode().strip() if stderr else stdout.decode().strip()
@@ -227,6 +292,7 @@ class TTSEngine(BaseEngine):
             "type": "audio",
             "format": "wav" if output_path.endswith(".wav") else "mp3",
             "backend": job.backend,
+            "mode": job.params.get("mode", "instruct2"),
             "duration_sec": job.duration_sec,
         }]
         return {"outputs": artifacts}
