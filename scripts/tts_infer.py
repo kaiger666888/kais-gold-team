@@ -2,7 +2,7 @@
 """Standalone TTS inference script for kais-gold-team V6.
 
 Supports two backends:
-  - CosyVoice2: High-quality Chinese TTS via CosyVoice2-0.5B (GPU, if installed)
+  - CosyVoice3: High-quality Chinese TTS via Fun-CosyVoice3-0.5B-2512 (GPU, if installed)
   - edge-tts: Microsoft Edge TTS fallback (always available)
 
 Usage:
@@ -36,15 +36,17 @@ def _setup_env() -> None:
     """Set up environment variables for CosyVoice."""
     os.environ.setdefault('COSYVOICE_ROOT', '/opt/CosyVoice')
     os.environ.setdefault('COSYVOICE_MODEL_DIR',
-        os.path.join(os.environ['COSYVOICE_ROOT'], 'pretrained_models', 'iic', 'CosyVoice2-0.5B'))
+        os.path.join(os.environ['COSYVOICE_ROOT'], 'pretrained_models', 'FunAudioLLM', 'Fun-CosyVoice3-0.5B-2512'))
+    os.environ.setdefault('COSYVOICE_LLM_WEIGHT', 'llm.rl.pt')
     os.environ.setdefault('MPLCONFIGDIR', '/tmp/matplotlib')
 
 
 def infer_cosyvoice(text: str, output_path: str, voice: str, speed: float) -> dict:
-    """Run CosyVoice2 inference.
+    """Run CosyVoice3 inference.
 
-    Expects CosyVoice repo cloned at COSYVOICE_ROOT with CosyVoice2-0.5B model.
-    Uses CosyVoice2.inference_instruct2 for zero-shot synthesis.
+    Expects CosyVoice repo cloned at COSYVOICE_ROOT with Fun-CosyVoice3-0.5B-2512 model.
+    Uses CosyVoice3.inference_instruct2 for zero-shot synthesis.
+    Supports RL weight via COSYVOICE_LLM_WEIGHT env var.
     """
     cosy_root = os.environ.get(
         "COSYVOICE_ROOT",
@@ -59,11 +61,11 @@ def infer_cosyvoice(text: str, output_path: str, voice: str, speed: float) -> di
 
     try:
         sys.path.insert(0, cosy_root)
-        from cosyvoice.cli.cosyvoice import CosyVoice2  # type: ignore
+        from cosyvoice.cli.cosyvoice import CosyVoice3  # type: ignore
 
         model_dir = os.environ.get(
             "COSYVOICE_MODEL_DIR",
-            os.path.join(cosy_root, "pretrained_models", "iic", "CosyVoice2-0.5B"),
+            os.path.join(cosy_root, "pretrained_models", "FunAudioLLM", "Fun-CosyVoice3-0.5B-2512"),
         )
 
         # Resolve symlink if needed (ModelScope creates symlinks)
@@ -71,27 +73,41 @@ def infer_cosyvoice(text: str, output_path: str, voice: str, speed: float) -> di
         if not os.path.isdir(model_dir):
             return {
                 "status": "error",
-                "error": f"CosyVoice2 model not found at {model_dir}. Set COSYVOICE_MODEL_DIR.",
+                "error": f"CosyVoice3 model not found at {model_dir}. Set COSYVOICE_MODEL_DIR.",
                 "backend": "cosyvoice",
             }
 
-        cosy = CosyVoice2(model_dir)
+        # RL weight: if COSYVOICE_LLM_WEIGHT != llm.pt, reload model with RL weights
+        llm_weight = os.environ.get('COSYVOICE_LLM_WEIGHT', 'llm.pt')
+        use_rl = llm_weight != 'llm.pt'
+
+        cosy = CosyVoice3(model_dir)
+
+        if use_rl:
+            rl_path = os.path.join(model_dir, llm_weight)
+            if os.path.isfile(rl_path):
+                import torch as _torch
+                rl_state = _torch.load(rl_path, map_location='cpu', weights_only=True)
+                cosy.model.llm.load_state_dict(rl_state)
+                del rl_state
+                print(f"CosyVoice3: loaded RL weight {llm_weight}")
+            else:
+                print(f"CosyVoice3: RL weight {llm_weight} not found, using base llm.pt")
 
         ensure_output_dir(output_path)
 
         import torchaudio
 
-        # CosyVoice2 uses instruct2 mode — provide natural language instruction
-        # Voice instructions map
+        # CosyVoice3 uses instruct2 mode — provide instruction with <|endofprompt|> marker
         instruct_map = {
-            "default": "用标准的普通话朗读。",
-            "中文女": "用温柔的女性声音朗读。",
-            "中文男": "用沉稳的男性声音朗读。",
-            "english_female": "Read in a warm female voice.",
-            "english_male": "Read in a deep male voice.",
-            "japanese_female": "日本語の女性の声で読んでください。",
+            "default": "You are a helpful assistant. 用标准的普通话朗读。",
+            "中文女": "You are a helpful assistant. 用温柔的女性声音朗读。",
+            "中文男": "You are a helpful assistant. 用沉稳的男性声音朗读。",
+            "english_female": "You are a helpful assistant. Read in a warm female voice.",
+            "english_male": "You are a helpful assistant. Read in a deep male voice.",
+            "japanese_female": "You are a helpful assistant. 日本語の女性の声で読んでください。",
         }
-        instruct_text = instruct_map.get(voice, instruct_map["default"])
+        instruct_text = instruct_map.get(voice, instruct_map["default"]) + "<|endofprompt|>"
 
         # Generate a short silent reference WAV for inference_instruct2
         import torch as _torch
@@ -100,29 +116,44 @@ def infer_cosyvoice(text: str, output_path: str, voice: str, speed: float) -> di
             _silence = _torch.zeros(1, 24000)  # 1 second silence at 24kHz
             torchaudio.save(ref_wav_path, _silence, 24000)
 
+        # CosyVoice3 instruct2: tts_text and instruct_text are combined
+        # instruct2 expects: tts_text = actual text, instruct_text = instruction with <|endofprompt|>
+        # Must also provide a valid prompt_wav for voice reference
+        # Use asset/zero_shot_prompt.wav from CosyVoice repo
+        prompt_wav = os.path.join(cosy_root, "asset", "zero_shot_prompt.wav")
+        if not os.path.isfile(prompt_wav):
+            prompt_wav = ref_wav_path
+
         # Collect all streaming chunks and concatenate
         all_wav = None
         sample_rate = cosy.sample_rate
-        for result in cosy.inference_instruct2(
-            tts_text=text,
-            instruct_text=instruct_text,
-            prompt_wav=ref_wav_path,
-            stream=False,
-            speed=speed,
-        ):
-            wav = result["tts_speech"]
-            if all_wav is None:
-                all_wav = wav
-            else:
-                import torch
-                all_wav = torch.cat([all_wav, wav], dim=1)
+        try:
+            for result in cosy.inference_instruct2(
+                tts_text=text,
+                instruct_text=instruct_text,
+                prompt_wav=prompt_wav,
+                stream=False,
+                speed=speed,
+            ):
+                wav = result["tts_speech"]
+                if all_wav is None:
+                    all_wav = wav
+                else:
+                    import torch
+                    all_wav = torch.cat([all_wav, wav], dim=1)
+        except Exception as e:
+            return {
+                "status": "error",
+                "error": f"CosyVoice3 instruct2 inference failed: {e}",
+                "backend": "cosyvoice",
+            }
 
-        if all_wav is not None:
+        if all_wav is not None and all_wav.shape[1] > 0:
             torchaudio.save(output_path, all_wav, sample_rate)
         else:
             return {
                 "status": "error",
-                "error": "CosyVoice2 produced no output",
+                "error": "CosyVoice3 produced no output",
                 "backend": "cosyvoice",
             }
 
@@ -138,7 +169,7 @@ def infer_cosyvoice(text: str, output_path: str, voice: str, speed: float) -> di
         tb = traceback.format_exc()
         return {
             "status": "error",
-            "error": f"CosyVoice inference failed: {e}",
+            "error": f"CosyVoice3 inference failed: {e}",
             "traceback": tb,
             "backend": "cosyvoice",
         }
