@@ -48,11 +48,18 @@ def _setup_paths(model_dir: str) -> None:
     The Hunyuan3D-2 release ships its python code under ``hy3dshape/`` and
     ``hy3dpaint/`` subdirectories. The reference ``run_shape.py`` inserts
     these into sys.path; we mirror that here.
+
+    Mini-model directories don't include the code, so we also add the default
+    full-model directory as a fallback.
     """
-    for sub in ("hy3dshape", "hy3dpaint"):
-        sub_path = os.path.join(model_dir, sub)
-        if os.path.isdir(sub_path) and sub_path not in sys.path:
-            sys.path.insert(0, sub_path)
+    search_dirs = [model_dir]
+    if DEFAULT_MODEL_DIR != model_dir:
+        search_dirs.append(DEFAULT_MODEL_DIR)
+    for base in search_dirs:
+        for sub in ("hy3dshape", "hy3dpaint"):
+            sub_path = os.path.join(base, sub)
+            if os.path.isdir(sub_path) and sub_path not in sys.path:
+                sys.path.insert(0, sub_path)
 
 
 def _apply_torchvision_fix() -> None:
@@ -66,13 +73,31 @@ def _apply_torchvision_fix() -> None:
 
 
 def _patch_config_targets(model_dir: str) -> None:
-    """No-op kept for compatibility.
+    """Patch config.yaml files that use ``hy3dgen.shapegen`` → ``hy3dshape``.
 
-    The release config.yaml files in /data/models/tencent/Hunyuan3D-2/ already
-    target the ``hy3dshape`` namespace, so no patching is needed. This stub
-    exists so callers that historically needed the patch continue to work.
+    Mini-model configs (e.g. Hunyuan3D-2mini) reference ``hy3dgen.shapegen``
+    but the installed code package is ``hy3dshape``.  This rewrites the config
+    on disk so ``instantiate_from_config`` can import the correct classes.
     """
-    return None
+    for root, _dirs, files in os.walk(model_dir):
+        for fname in files:
+            if fname != "config.yaml":
+                continue
+            path = os.path.join(root, fname)
+            try:
+                with open(path, "r") as fp:
+                    content = fp.read()
+                if "hy3dgen.shapegen" not in content:
+                    continue
+                patched = content.replace("hy3dgen.shapegen", "hy3dshape")
+                with open(path, "w") as fp:
+                    fp.write(patched)
+                print(
+                    f"[hunyuan3d] patched {path}: hy3dgen.shapegen → hy3dshape",
+                    file=sys.stderr,
+                )
+            except Exception as exc:
+                print(f"[hunyuan3d] warning: could not patch {path}: {exc}", file=sys.stderr)
 
 
 def main() -> int:
@@ -98,6 +123,11 @@ def main() -> int:
         "--model-dir",
         default=DEFAULT_MODEL_DIR,
         help="Local path to Hunyuan3D-2 model directory",
+    )
+    parser.add_argument(
+        "--subfolder",
+        default=None,
+        help="Model subfolder (default: auto-detect from --model)",
     )
     parser.add_argument(
         "--seed",
@@ -134,9 +164,21 @@ def main() -> int:
 
     from hy3dshape.pipelines import Hunyuan3DDiTFlowMatchingPipeline
 
+    # Resolve subfolder: explicit override > auto-detect from model variant
+    if args.subfolder:
+        subfolder = args.subfolder
+    else:
+        subfolder = "hunyuan3d-dit-v2-1" if args.model == "full" else "hunyuan3d-dit-v2-mini-fast"
+
     t_load_start = time.monotonic()
-    print(f"[hunyuan3d] loading pipeline from {args.model_dir} (model={args.model})", file=sys.stderr)
-    pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(args.model_dir)
+    print(
+        f"[hunyuan3d] loading pipeline from {args.model_dir} "
+        f"(model={args.model}, subfolder={subfolder})",
+        file=sys.stderr,
+    )
+    pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
+        args.model_dir, subfolder=subfolder,
+    )
     pipeline.to(args.device)
     t_load_end = time.monotonic()
     elapsed_load = round(t_load_end - t_load_start, 2)

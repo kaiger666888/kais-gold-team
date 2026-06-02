@@ -145,6 +145,7 @@ class Hunyuan3DEngine(BaseEngine):
         steps = int(workflow.get("steps", 50))
         seed = workflow.get("seed")
         model_dir = workflow.get("model_dir", self._model_dir)
+        subfolder = workflow.get("subfolder")
 
         job = Hunyuan3DJob(
             job_id=job_id,
@@ -170,6 +171,8 @@ class Hunyuan3DEngine(BaseEngine):
             "--steps", str(steps),
             "--model-dir", model_dir,
         ]
+        if subfolder:
+            cmd.extend(["--subfolder", subfolder])
         if seed is not None:
             cmd.extend(["--seed", str(seed)])
 
