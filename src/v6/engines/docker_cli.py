@@ -47,9 +47,10 @@ class DockerCLIEngine(BaseEngine):
 
         cmd_args = self._build_command(task_id, task_params, workspace)
 
+        gpu_flag = "all" if self._config.gpu_device == "all" else f'"device={self._config.gpu_device}"'
         docker_cmd = [
             "docker", "run", "--rm",
-            "--gpus", "all",
+            "--gpus", gpu_flag,
             "-v", f"{workspace}:/workspace",
             "-w", "/workspace",
             "--label", "kais-worker=true",

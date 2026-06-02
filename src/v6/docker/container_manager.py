@@ -30,9 +30,10 @@ class ContainerManager:
         Returns container ID on success, None on failure.
         """
         container_name = f"kais-{config.name}-{task_id[:8]}"
+        gpu_flag = "all" if config.gpu_device == "all" else f'"device={config.gpu_device}"'
         cmd = [
             "docker", "run", "-d", "--rm",
-            "--gpus", "all",
+            "--gpus", gpu_flag,
             "--name", container_name,
             "-p", f"{config.api_port}:{config.api_port}",
             "-v", f"{self._workspace}:/workspace",

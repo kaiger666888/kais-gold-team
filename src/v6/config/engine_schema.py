@@ -34,6 +34,8 @@ class EngineConfig:
     task_type_params: dict[str, dict[str, Any]] = field(default_factory=dict)
     # Mode: "api", "cli", or "polling"
     mode: str = "api"
+    # GPU device: "all" or a specific device id like "0", "1"
+    gpu_device: str = "all"
 
     @classmethod
     def from_yaml(
@@ -79,4 +81,5 @@ class EngineConfig:
             mode=yaml_cfg.get("mode", "api"),
             task_type_assets=task_type_assets,
             task_type_params=task_type_params,
+            gpu_device=yaml_cfg.get("gpu_device", "all"),
         )
