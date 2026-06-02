@@ -124,9 +124,9 @@ MODELS: dict[str, dict] = {
         "precision": "bf16",
         "category": "Light",
         "combo_id": "Combo-Audio-Full",
-        "weight_path": "FunAudioLLM/CosyVoice",
+        "weight_path": "FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
         "runtime": "audio-runtime",
-        "triton_hash": "cosyvoice_fp16_sm86",
+        "triton_hash": "cosyvoice3_rl_fp16_sm86",
     },
     "whisper": {
         "vram": 3000,

@@ -18,7 +18,7 @@ from src.v6.gpu_monitor import (
     get_active_engines,
     get_gpu_vram_usage,
     mark_unloaded,
-    query_nvidia_smi,
+    _query_nvidia_smi as query_nvidia_smi,
     register_engine,
     touch_engine,
 )

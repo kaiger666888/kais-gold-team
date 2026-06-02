@@ -14,6 +14,7 @@ from src.v6.engine_pool import EnginePool, get_engine_pool
 from src.v6.executor import get_executor
 from src.v6.engines.mock import MockEngine
 from src.v6.engines.tts import TTSEngine
+from src.v6.engines.hunyuan3d import Hunyuan3DEngine
 from src.v6.gpu_monitor import get_gpu_vram_usage
 from src.v6.middleware.gpu_guard import GPUGuardMiddleware
 from src.v6.routers import tasks, engines, events, health
@@ -49,6 +50,15 @@ async def lifespan(app: FastAPI):
         logger.info("TTS engine registered")
     except Exception as e:
         logger.warning("TTS engine init failed: %s", e)
+
+    # Register Hunyuan3D-2 engine (image-to-3D via subprocess)
+    try:
+        hunyuan_engine = Hunyuan3DEngine()
+        await hunyuan_engine.start()
+        executor.register_engine(hunyuan_engine)
+        logger.info("Hunyuan3D engine registered")
+    except Exception as e:
+        logger.warning("Hunyuan3D engine init failed: %s", e)
 
     # Register ComfyUI engine if available
     if COMFYUI_ENABLED:

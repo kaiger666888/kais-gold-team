@@ -399,6 +399,54 @@ def build_tts_workflow(
     }
 
 
+def build_hunyuan3d_workflow(
+    input_image: str,
+    output_path: str = "",
+    model: str = "full",
+    device: str = "cuda:0",
+    steps: int = 50,
+    seed: int | None = None,
+    model_dir: str = "",
+    task_id: str = "",
+) -> dict[str, Any]:
+    """Build a Hunyuan3D-2 parameter dict for Hunyuan3DEngine.submit().
+
+    Like ``build_tts_workflow``, this is not a ComfyUI graph — it returns
+    plain parameters consumed by ``Hunyuan3DEngine`` which invokes
+    ``scripts/hunyuan3d_infer.py`` via subprocess.
+
+    Args:
+        input_image: Absolute path to source image (PNG/JPG).
+        output_path: Output GLB path. Auto-generated under KAIS_OUTPUT_ROOT if empty.
+        model: "mini" or "full" (default full = Hunyuan3D-2.1).
+        device: Torch device (cuda:0). Remapped to CUDA_VISIBLE_DEVICES in script.
+        steps: Inference steps (default 50; ~75s on RTX 3090 for full model).
+        seed: Reproducibility seed. Pipeline default if None.
+        model_dir: Override model checkpoint directory.
+        task_id: Used for default output path naming.
+
+    Returns:
+        Dict consumed by Hunyuan3DEngine.submit().
+    """
+    if not output_path:
+        output_root = os.environ.get("KAIS_OUTPUT_ROOT", "/mnt/agents/output")
+        tid = task_id or "hunyuan3d-unknown"
+        output_path = os.path.join(output_root, tid, "model.glb")
+
+    workflow: dict[str, Any] = {
+        "input_image": input_image,
+        "output_path": output_path,
+        "model": model,
+        "device": device,
+        "steps": steps,
+    }
+    if seed is not None:
+        workflow["seed"] = seed
+    if model_dir:
+        workflow["model_dir"] = model_dir
+    return workflow
+
+
 def build_trellis_image_to_3d_workflow(
     image_name: str,
     resolution: int = 1024,

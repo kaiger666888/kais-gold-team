@@ -131,6 +131,28 @@ class TaskExecutor:
                         task_id=task.task_id,
                     )
                     logger.info("Auto-built TTS workflow for task %s", task.task_id)
+                elif task.type == TaskType.IMAGE_TO_3D:
+                    from src.v6.engines.workflow_builder import build_hunyuan3d_workflow
+                    input_image = task.params.get("input_image") or task.params.get("image", "")
+                    if not input_image:
+                        logger.error("IMAGE_TO_3D requires 'input_image' param, task %s", task.task_id)
+                        await store.update(
+                            task.task_id,
+                            status=TaskStatus.FAILED,
+                            error="IMAGE_TO_3D requires 'input_image' param",
+                        )
+                        return
+                    workflow = build_hunyuan3d_workflow(
+                        input_image=input_image,
+                        output_path=task.params.get("output_path", ""),
+                        model=task.params.get("model", "full"),
+                        device=task.params.get("device", "cuda:0"),
+                        steps=task.params.get("steps", 50),
+                        seed=task.params.get("seed"),
+                        model_dir=task.params.get("model_dir", ""),
+                        task_id=task.task_id,
+                    )
+                    logger.info("Auto-built Hunyuan3D workflow for task %s", task.task_id)
                 elif task.params.get("model") == "flux-dev":
                     from src.v6.engines.workflow_builder import build_flux_dev_workflow
                     workflow = build_flux_dev_workflow(
@@ -290,6 +312,13 @@ class TaskExecutor:
             if tts_engine:
                 return tts_engine
             # Fall through to mock if TTS engine unavailable
+
+        # For image-to-3D tasks, prefer hunyuan3d-local engine
+        if task.type == TaskType.IMAGE_TO_3D:
+            hunyuan_engine = self._engines.get("hunyuan3d-local")
+            if hunyuan_engine:
+                return hunyuan_engine
+            # Fall through to other engines (e.g. comfyui TRELLIS)
 
         # Direct match
         if engine_id in self._engines:
