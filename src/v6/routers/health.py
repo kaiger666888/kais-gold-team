@@ -24,7 +24,7 @@ def _get_gpu_info() -> list[dict]:
     gpus = []
     try:
         result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=index,gpu_name,memory.total,memory.used,utilization.gpu",
+            ["nvidia-smi", "--query-gpu=index,gpu_name,memory.total,memory.used",
              "--format=csv,noheader,nounits"],
             capture_output=True, text=True, timeout=5,
         )
@@ -32,13 +32,12 @@ def _get_gpu_info() -> list[dict]:
             return gpus
         for line in result.stdout.strip().split("\n"):
             parts = [p.strip() for p in line.split(",")]
-            if len(parts) >= 5:
+            if len(parts) >= 4:
                 gpus.append({
                     "index": int(parts[0]),
                     "device": parts[1],
                     "vram_total_mb": int(float(parts[2])),
                     "vram_used_mb": int(float(parts[3])),
-                    "utilization_pct": float(parts[4]),
                 })
     except Exception as e:
         logger.debug("nvidia-smi failed: %s", e)

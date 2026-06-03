@@ -14,7 +14,6 @@ from fastapi import APIRouter, HTTPException
 
 from src.v6.engine.cloud_pool import CLOUD_PROVIDERS, get_cloud_pool
 from src.v6.engine.local_pool import get_local_pool
-from src.v6.engine.router import LOCAL_VRAM_GB, VRAM_HARD_CAP_GB
 from src.v6.executor import get_executor
 from src.v6.models.task import TaskType, TaskStatus
 from src.v6.store import get_task_store
@@ -42,8 +41,6 @@ async def list_engines():
             "type": "executor",
             "status": "online",
             "supported_types": cap.supported_types,
-            "vram_total_mb": cap.vram_total_mb,
-            "vram_used_mb": cap.vram_total_mb - cap.vram_available_mb,
             "queue_depth": 0,
             "models": cap.models,
         })
@@ -56,8 +53,6 @@ async def list_engines():
         "type": "comfyui",
         "status": "online" if local_health["available"] else "offline",
         "supported_types": [t.value for t in TaskType],
-        "vram_total_mb": local_health["vram_total_mb"],
-        "vram_used_mb": local_health.get("vram_used_mb", 0),
         "queue_depth": 0,
         "models": ["wan2.2-14b", "flux-dev", "ace-step", "cosyvoice", "real-esrgan"],
     })
@@ -71,8 +66,6 @@ async def list_engines():
             "type": pid,
             "status": "online" if info["available"] else "offline",
             "supported_types": info["supported_types"],
-            "vram_total_mb": None,
-            "vram_used_mb": None,
             "queue_depth": 0,
             "models": [],
         })
@@ -94,9 +87,6 @@ async def get_capacity():
     return {
         "local": {
             "available": local_health["available"],
-            "vram_total_mb": local_health["vram_total_mb"],
-            "vram_available_mb": local_health["vram_available_mb"],
-            "gpu_utilization_pct": local_health["gpu_utilization_pct"],
             "running_tasks": len(running_tasks),
             "queued_tasks": await store.queue_size(),
             "estimated_wait_sec": await store.queue_size() * 5.0,
@@ -177,7 +167,6 @@ async def engine_status(engine_id: str):
             "supported_types": cap.supported_types,
             "max_resolution": list(cap.max_resolution),
             "max_duration_sec": cap.max_duration_sec,
-            "vram_total_mb": cap.vram_total_mb,
             "models": cap.models,
         },
     }
