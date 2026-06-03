@@ -1,7 +1,7 @@
 # Wan2.1 14B Text-to-Video Engine (Node 15/16)
-# Local image: kais-wan:latest
-# GPU: RTX 3090 (24GB), ~16GB VRAM
-# API: wan_api.py on port 8081
+# API: wan_gguf_api.py on port 8081 → ComfyUI on 8188
+# GPU: RTX 3090 (24GB), GGUF Q8_0 (~15GB VRAM)
+# Models: wan2.1-t2v-14b-Q8_0.gguf + umt5-xxl-enc-bf16.pth + wan_2.1_vae.safetensors
 
 name: wan14b
 engine: wan14b
@@ -20,12 +20,52 @@ task_types:
       prompt:
         type: string
         default: ""
+      negative_prompt:
+        type: string
+        default: ""
       resolution:
         type: string
         default: "480p"
-      duration:
+        description: "480p (832x480), 720p (1280x720), or WxH"
+      width:
         type: int
-        default: 5
+        default: null
+        description: "Override width (otherwise from resolution)"
+      height:
+        type: int
+        default: null
+        description: "Override height (otherwise from resolution)"
+      num_frames:
+        type: int
+        default: 41
+        description: "Frames (1+4n: 5,9,17,21,33,41,49,81)"
+      fps:
+        type: int
+        default: 16
+      steps:
+        type: int
+        default: 20
+      cfg:
+        type: float
+        default: 7.5
+      shift:
+        type: float
+        default: 1.0
+      seed:
+        type: int
+        default: -1
+        description: "-1 for random"
+      scheduler:
+        type: string
+        default: "unipc"
+        description: "unipc, uni, dpmpp_2m, euler"
+      sampler_name:
+        type: string
+        default: "uni_pc"
+      precision:
+        type: string
+        default: "bf16"
+        description: "bf16, fp16, fp32"
     assets:
       required: []
       accept: []
@@ -39,12 +79,51 @@ task_types:
       prompt:
         type: string
         default: ""
+      negative_prompt:
+        type: string
+        default: ""
       resolution:
         type: string
         default: "720p"
-      duration:
+        description: "480p (832x480), 720p (1280x720), or WxH"
+      width:
         type: int
-        default: 5
+        default: null
+      height:
+        type: int
+        default: null
+      num_frames:
+        type: int
+        default: 81
+        description: "Frames (1+4n: 5,9,17,21,33,41,49,81)"
+      fps:
+        type: int
+        default: 16
+      steps:
+        type: int
+        default: 30
+      cfg:
+        type: float
+        default: 7.5
+      shift:
+        type: float
+        default: 1.0
+      seed:
+        type: int
+        default: -1
+      scheduler:
+        type: string
+        default: "unipc"
+      sampler_name:
+        type: string
+        default: "uni_pc"
+      precision:
+        type: string
+        default: "bf16"
+      model:
+        type: string
+        default: null
+        description: "Override GGUF model path"
     assets:
       required: []
       accept: []

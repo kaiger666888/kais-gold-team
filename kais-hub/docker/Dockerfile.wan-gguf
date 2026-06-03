@@ -1,0 +1,18 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir fastapi uvicorn httpx pydantic
+
+COPY wan_gguf_api.py .
+
+# Env defaults (override at runtime)
+ENV COMFYUI_HOST=127.0.0.1
+ENV COMFYUI_PORT=8188
+ENV LISTEN_PORT=8081
+ENV LISTEN_HOST=0.0.0.0
+ENV OUTPUT_DIR=/tmp/wan_output
+
+EXPOSE 8081
+
+CMD ["python", "wan_gguf_api.py"]

@@ -1,6 +1,8 @@
 # Wan2.1 14B Image-to-Video Engine (Node 18)
-# Local image: kais-wan:latest
-# GPU: RTX 3090 (24GB), ~16GB VRAM
+# API: wan_gguf_api.py on port 8081 → ComfyUI on 8188
+# GPU: RTX 3090 (24GB), GGUF Q4_K_M city96 (~10.6GB VRAM)
+# Models: wan2.1-i2v-480p-14b-Q4_K_M_city96.gguf (MUST use city96 for k_img weights)
+# WARNING: Wan2.2 I2V GGUF (AniPorta) lacks k_img weights — do NOT use!
 
 name: wan14b_i2v
 engine: wan14b_i2v
@@ -19,17 +21,63 @@ task_types:
       prompt:
         type: string
         default: ""
+      negative_prompt:
+        type: string
+        default: ""
       resolution:
         type: string
         default: "480p"
-      duration:
+        description: "480p (832x480), 720p (1280x720), or WxH"
+      width:
         type: int
-        default: 5
+        default: null
+      height:
+        type: int
+        default: null
+      num_frames:
+        type: int
+        default: 41
+        description: "Frames (1+4n: 5,9,17,21,33,41,49,81)"
+      fps:
+        type: int
+        default: 16
+      steps:
+        type: int
+        default: 20
+      cfg:
+        type: float
+        default: 7.5
+      shift:
+        type: float
+        default: 1.0
+      seed:
+        type: int
+        default: -1
+        description: "-1 for random"
+      scheduler:
+        type: string
+        default: "unipc"
+      sampler_name:
+        type: string
+        default: "uni_pc"
+      precision:
+        type: string
+        default: "bf16"
+      noise_aug_strength:
+        type: float
+        default: 0.02
+        description: "I2V noise augmentation"
+      start_latent_strength:
+        type: float
+        default: 1.0
+      end_latent_strength:
+        type: float
+        default: 1.0
     assets:
       required:
         - role: reference_image
           type: image
-          description: "Source image to animate"
+          description: "Source image to animate (path or URL)"
       accept: [image]
 
   wan14b_i2v_final:
@@ -41,15 +89,65 @@ task_types:
       prompt:
         type: string
         default: ""
+      negative_prompt:
+        type: string
+        default: ""
       resolution:
         type: string
-        default: "720p"
-      duration:
+        default: "480p"
+        description: "I2V 480p max recommended; 720p may OOM"
+      width:
         type: int
-        default: 5
+        default: null
+      height:
+        type: int
+        default: null
+      num_frames:
+        type: int
+        default: 81
+        description: "Frames (1+4n: 5,9,17,21,33,41,49,81)"
+      fps:
+        type: int
+        default: 16
+      steps:
+        type: int
+        default: 30
+      cfg:
+        type: float
+        default: 7.5
+      shift:
+        type: float
+        default: 1.0
+      seed:
+        type: int
+        default: -1
+        description: "-1 for random"
+      scheduler:
+        type: string
+        default: "unipc"
+      sampler_name:
+        type: string
+        default: "uni_pc"
+      precision:
+        type: string
+        default: "bf16"
+      model:
+        type: string
+        default: null
+        description: "Override GGUF model path"
+      noise_aug_strength:
+        type: float
+        default: 0.02
+        description: "I2V noise augmentation"
+      start_latent_strength:
+        type: float
+        default: 1.0
+      end_latent_strength:
+        type: float
+        default: 1.0
     assets:
       required:
         - role: reference_image
           type: image
-          description: "Source image to animate"
+          description: "Source image to animate (path or URL)"
       accept: [image]
