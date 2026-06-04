@@ -16,6 +16,7 @@ from src.v6.engines.mock import MockEngine
 from src.v6.engines.tts import TTSEngine
 from src.v6.engines.acestep import ACEStepEngine
 from src.v6.engines.hunyuan3d import Hunyuan3DEngine
+from src.v6.engines.hunyuan3d_mv import Hunyuan3DMvEngine
 from src.v6.gpu_monitor import get_gpu_vram_usage
 from src.v6.middleware.gpu_guard import GPUGuardMiddleware
 from src.v6.routers import tasks, engines, events, health
@@ -69,6 +70,15 @@ async def lifespan(app: FastAPI):
         logger.info("Hunyuan3D engine registered")
     except Exception as e:
         logger.warning("Hunyuan3D engine init failed: %s", e)
+
+    # Register Hunyuan3D-2mv engine (multiview image-to-3D via subprocess)
+    try:
+        hunyuan_mv_engine = Hunyuan3DMvEngine()
+        await hunyuan_mv_engine.start()
+        executor.register_engine(hunyuan_mv_engine)
+        logger.info("Hunyuan3D-2mv engine registered")
+    except Exception as e:
+        logger.warning("Hunyuan3D-2mv engine init failed: %s", e)
 
     # Register ComfyUI engine if available
     if COMFYUI_ENABLED:
