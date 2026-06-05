@@ -137,6 +137,9 @@ class LocalPool:
     def health(self) -> dict[str, Any]:
         return {
             "available": self._running,
+            "vram_total_mb": 24576,
+            "vram_available_mb": 24576,
+            "gpu_utilization_pct": 0.0,
         }
 
 

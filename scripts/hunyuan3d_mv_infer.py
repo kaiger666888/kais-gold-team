@@ -37,16 +37,18 @@ _DEFAULT_2MV_MODEL_DIR = os.environ.get(
     "/data/models/tencent/Hunyuan3D-2mv",
 )
 # Shared pipeline code lives in the 2.1 installation
-_SHARED_CODE_DIR = os.environ.get(
+_CODE_DIR = os.environ.get(
     "HUNYUAN3D_CODE_DIR",
     "/data/models/tencent/Hunyuan3D-2",
 )
 
 
-def _setup_paths() -> None:
+def _setup_paths(code_dir: str = None) -> None:
     """Add hy3dshape submodule to sys.path."""
+    if code_dir is None:
+        code_dir = _CODE_DIR
     for sub in ("hy3dshape", "hy3dpaint"):
-        sub_path = os.path.join(_SHARED_CODE_DIR, sub)
+        sub_path = os.path.join(_CODE_DIR, sub)
         if os.path.isdir(sub_path) and sub_path not in sys.path:
             sys.path.insert(0, sub_path)
 
@@ -80,10 +82,12 @@ def main() -> int:
     parser.add_argument("--right", default=None, help="Right view image path")
     parser.add_argument("--output", required=True, help="Output GLB path")
     parser.add_argument("--model-dir", default=_DEFAULT_2MV_MODEL_DIR)
-    parser.add_argument("--code-dir", default=_SHARED_CODE_DIR,
+    parser.add_argument("--code-dir", default=_CODE_DIR,
                         help="Shared pipeline code directory (hy3dshape/)")
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--steps", type=int, default=50)
+    parser.add_argument("--subfolder", default="hunyuan3d-dit-v2-mv",
+                        help="Model subfolder within model-dir")
     parser.add_argument("--seed", type=int, default=None)
     args = parser.parse_args()
 
@@ -111,9 +115,8 @@ def main() -> int:
         os.environ.setdefault("CUDA_VISIBLE_DEVICES", idx)
         args.device = "cuda:0"
 
-    global _SHARED_CODE_DIR
-    _SHARED_CODE_DIR = args.code_dir
-    _setup_paths()
+    code_dir = args.code_dir
+    _setup_paths(code_dir)
     _patch_config(args.model_dir)
 
     # Heavy imports after path setup
@@ -129,8 +132,10 @@ def main() -> int:
     from hy3dshape.pipelines import Hunyuan3DDiTFlowMatchingPipeline
 
     t_load_start = time.monotonic()
-    print(f"[hunyuan3d-mv] loading pipeline from {args.model_dir}", file=sys.stderr)
-    pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(args.model_dir)
+    print(f"[hunyuan3d-mv] loading pipeline from {args.model_dir} (subfolder={args.subfolder})", file=sys.stderr)
+    pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
+        args.model_dir, subfolder=args.subfolder, use_safetensors=True,
+    )
     pipeline.to(args.device)
     t_load_end = time.monotonic()
     elapsed_load = round(t_load_end - t_load_start, 2)

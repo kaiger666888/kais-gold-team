@@ -35,6 +35,12 @@ COMFYUI_ENABLED = os.environ.get("COMFYUI_ENABLED", "false").lower() in ("true",
 COMFYUI_HOST = os.environ.get("COMFYUI_HOST", "127.0.0.1")
 COMFYUI_PORT = int(os.environ.get("COMFYUI_PORT", "8188"))
 
+# Dual ComfyUI instances (V9 MEGAPAK)
+COMFYUI_PRIMARY_HOST = os.environ.get("COMFYUI_PRIMARY_HOST", "")
+COMFYUI_PRIMARY_PORT = int(os.environ.get("COMFYUI_PRIMARY_PORT", "8188"))
+COMFYUI_AUX_HOST = os.environ.get("COMFYUI_AUX_HOST", "")
+COMFYUI_AUX_PORT = int(os.environ.get("COMFYUI_AUX_PORT", "8189"))
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -80,18 +86,61 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Hunyuan3D-2mv engine init failed: %s", e)
 
-    # Register ComfyUI engine if available
+    # Register ComfyUI engine(s)
+    # Dual-engine mode when COMFYUI_PRIMARY_HOST is set; otherwise legacy single-engine fallback
     if COMFYUI_ENABLED:
         try:
             from src.v6.engines.comfyui import ComfyUIEngine
-            comfyui = ComfyUIEngine(host=COMFYUI_HOST, port=COMFYUI_PORT)
-            await comfyui.start()
-            health = await comfyui.health()
-            if health.get("available"):
-                executor.register_engine(comfyui)
-                logger.info("ComfyUI engine registered (online) → %s:%s", COMFYUI_HOST, COMFYUI_PORT)
+
+            if COMFYUI_PRIMARY_HOST:
+                # ── Dual ComfyUI mode (V9 MEGAPAK) ──
+                # Primary (RTX 3090)
+                try:
+                    comfyui_primary = ComfyUIEngine(
+                        host=COMFYUI_PRIMARY_HOST, port=COMFYUI_PRIMARY_PORT,
+                        engine_id="comfyui-primary",
+                    )
+                    await comfyui_primary.start()
+                    primary_health = await comfyui_primary.health()
+                    if primary_health.get("available"):
+                        executor.register_engine(comfyui_primary)
+                        logger.info("ComfyUI primary registered (online) → %s:%s",
+                                    COMFYUI_PRIMARY_HOST, COMFYUI_PRIMARY_PORT)
+                    else:
+                        logger.warning("ComfyUI primary offline at %s:%s",
+                                       COMFYUI_PRIMARY_HOST, COMFYUI_PRIMARY_PORT)
+                except Exception as e:
+                    logger.warning("ComfyUI primary init failed: %s", e)
+
+                # Auxiliary (RTX 3060 Ti)
+                if COMFYUI_AUX_HOST:
+                    try:
+                        comfyui_aux = ComfyUIEngine(
+                            host=COMFYUI_AUX_HOST, port=COMFYUI_AUX_PORT,
+                            engine_id="comfyui-auxiliary",
+                        )
+                        await comfyui_aux.start()
+                        aux_health = await comfyui_aux.health()
+                        if aux_health.get("available"):
+                            executor.register_engine(comfyui_aux)
+                            logger.info("ComfyUI auxiliary registered (online) → %s:%s",
+                                        COMFYUI_AUX_HOST, COMFYUI_AUX_PORT)
+                        else:
+                            logger.warning("ComfyUI auxiliary offline at %s:%s",
+                                           COMFYUI_AUX_HOST, COMFYUI_AUX_PORT)
+                    except Exception as e:
+                        logger.warning("ComfyUI auxiliary init failed: %s", e)
             else:
-                logger.warning("ComfyUI engine offline at %s:%s, using mock only", COMFYUI_HOST, COMFYUI_PORT)
+                # ── Legacy single-engine fallback ──
+                comfyui = ComfyUIEngine(host=COMFYUI_HOST, port=COMFYUI_PORT)
+                await comfyui.start()
+                health = await comfyui.health()
+                if health.get("available"):
+                    executor.register_engine(comfyui)
+                    logger.info("ComfyUI engine registered (online) → %s:%s", COMFYUI_HOST, COMFYUI_PORT)
+                else:
+                    logger.warning("ComfyUI engine offline at %s:%s, using mock only",
+                                   COMFYUI_HOST, COMFYUI_PORT)
         except ImportError:
             logger.warning("ComfyUIEngine not available, skipping")
         except Exception as e:

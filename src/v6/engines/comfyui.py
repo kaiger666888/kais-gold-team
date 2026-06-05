@@ -19,6 +19,41 @@ POLL_INTERVAL_SEC = 1.0
 POLL_TIMEOUT_SEC = 600.0  # 10 min max wait
 
 
+# Capability profiles keyed by engine_id
+_ENGINE_PROFILES: dict[str, dict[str, Any]] = {
+    "comfyui-primary": {
+        "name": "ComfyUI Primary (RTX 3090)",
+        "supported_types": [
+            "video_final", "video_preview",
+            "image_draw", "image_refine",
+            "upscale", "face_restore", "image_to_3d",
+        ],
+        "vram_total_mb": 24576,
+        "vram_available_mb": 24576,
+        "models": ["flux-dev-fp8", "flux-dev-ipa", "wan2.2-14b", "ltx-2.3-fp8", "real-esrgan", "facefusion"],
+    },
+    "comfyui-auxiliary": {
+        "name": "ComfyUI Auxiliary (RTX 3060 Ti)",
+        "supported_types": ["upscale", "face_restore", "image_refine"],
+        "vram_total_mb": 5500,
+        "vram_available_mb": 5500,
+        "models": ["real-esrgan", "facefusion"],
+    },
+}
+
+_FALLBACK_PROFILE = {
+    "name": "ComfyUI Local",
+    "supported_types": [
+        "video_final", "video_preview",
+        "image_draw", "image_refine",
+        "upscale", "face_restore", "image_to_3d",
+    ],
+    "vram_total_mb": 24576,
+    "vram_available_mb": 24576,
+    "models": ["flux-dev-fp8", "flux-dev-ipa", "wan2.2-14b", "ltx-2.3-fp8", "real-esrgan", "facefusion"],
+}
+
+
 class ComfyUIEngine(BaseEngine):
     """ComfyUI execution engine.
 
@@ -27,45 +62,48 @@ class ComfyUIEngine(BaseEngine):
     - GET  /history/{id}  → poll status
     - POST /interrupt     → cancel current
     - GET  /system_stats  → health check
+
+    Supports multiple instances via ``engine_id``:
+    - ``comfyui-primary`` — RTX 3090, all task types
+    - ``comfyui-auxiliary`` — RTX 3060 Ti, lightweight tasks only
     """
 
     def __init__(
         self,
         host: str = DEFAULT_COMFYUI_HOST,
         port: int = DEFAULT_COMFYUI_PORT,
+        engine_id: Optional[str] = None,
         client_id: Optional[str] = None,
         poll_interval: float = POLL_INTERVAL_SEC,
         poll_timeout: float = POLL_TIMEOUT_SEC,
     ) -> None:
         self._host = host
         self._port = port
+        self._engine_id = engine_id or "comfyui-local"
         self._client_id = client_id or str(uuid.uuid4())
         self._poll_interval = poll_interval
         self._poll_timeout = poll_timeout
         self._base_url = f"http://{host}:{port}"
         self._http: Optional[httpx.AsyncClient] = None
+        self._profile = _ENGINE_PROFILES.get(self._engine_id, _FALLBACK_PROFILE)
 
     @property
     def name(self) -> str:
-        return "ComfyUI Local"
+        return self._profile["name"]
 
     @property
     def engine_id(self) -> str:
-        return "comfyui-local"
+        return self._engine_id
 
     @property
     def capabilities(self) -> EngineCapabilities:
         return EngineCapabilities(
-            supported_types=[
-                "video_final", "video_preview",
-                "image_draw", "image_refine",
-                "upscale", "face_restore", "image_to_3d",
-            ],
+            supported_types=self._profile["supported_types"],
             max_resolution=(2048, 2048),
             max_duration_sec=30.0,
-            vram_total_mb=24576,
-            vram_available_mb=24576,
-            models=["flux-dev-fp8", "flux-dev-ipa", "wan2.2-14b", "ltx-2.3-fp8", "real-esrgan", "facefusion"],
+            vram_total_mb=self._profile["vram_total_mb"],
+            vram_available_mb=self._profile["vram_available_mb"],
+            models=self._profile["models"],
         )
 
     async def start(self) -> None:

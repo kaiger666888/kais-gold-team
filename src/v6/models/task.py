@@ -21,6 +21,9 @@ class TaskType(str, enum.Enum):
     UPSCALE = "upscale"
     FACE_RESTORE = "face_restore"
     IMAGE_TO_3D = "image_to_3d"
+    IMAGE_PULID = "image_pulid"            # PuLID character-consistency injection (FLUX + PuLID)
+    CONTROLNET_DEPTH = "controlnet_depth"  # ControlNet Depth geometry lock (FLUX + ControlNet)
+    WAN_I2V = "wan_i2v"                    # Wan 2.1 I2V dual-stage video generation
 
 
 class TaskStatus(str, enum.Enum):

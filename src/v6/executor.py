@@ -34,6 +34,9 @@ _TASK_OUTPUT_FIELDS: dict[TaskType, dict[str, str]] = {
     TaskType.UPSCALE: {"image": "upscaled.png"},
     TaskType.FACE_RESTORE: {"image": "face_restored.png"},
     TaskType.IMAGE_TO_3D: {"image": "model.glb"},
+    TaskType.IMAGE_PULID: {"image": "pulid_flux.png", "thumbnail": "thumb.jpg"},
+    TaskType.CONTROLNET_DEPTH: {"image": "controlnet_depth.png", "thumbnail": "thumb.jpg"},
+    TaskType.WAN_I2V: {"video": "wan_i2v.mp4", "thumbnail": "thumb.jpg"},
 }
 
 
@@ -187,6 +190,95 @@ class TaskExecutor:
                         filename_prefix=task.params.get("filename_prefix", "flux-ipadapter"),
                     )
                     logger.info("Auto-built FLUX Dev + IP-Adapter workflow for task %s", task.task_id)
+                elif task.type == TaskType.IMAGE_PULID:
+                    from src.v6.engines.workflow_builder import build_pulid_flux_workflow
+                    ref_img = task.params.get("image", "") or task.params.get("reference_image", "")
+                    if not ref_img:
+                        logger.error("IMAGE_PULID requires 'image' param, task %s", task.task_id)
+                        await store.update(task.task_id, status=TaskStatus.FAILED, error="IMAGE_PULID requires 'image' param")
+                        return
+                    workflow = build_pulid_flux_workflow(
+                        image_name=ref_img,
+                        prompt=task.params.get("prompt", ""),
+                        negative_prompt=task.params.get("negative_prompt", ""),
+                        width=task.params.get("width", 1024),
+                        height=task.params.get("height", 1024),
+                        steps=task.params.get("steps", 28),
+                        cfg_scale=task.params.get("cfg_scale", 3.5),
+                        weight=task.params.get("weight", 1.0),
+                        seed=task.params.get("seed"),
+                        filename_prefix=task.params.get("filename_prefix", "pulid_flux"),
+                    )
+                    logger.info("Auto-built PuLID FLUX workflow for task %s", task.task_id)
+                elif task.type == TaskType.CONTROLNET_DEPTH:
+                    from src.v6.engines.workflow_builder import build_controlnet_depth_workflow
+                    src_img = task.params.get("image", "")
+                    depth_img = task.params.get("depth_image", "") or task.params.get("depth_image_name", "")
+                    if not src_img or not depth_img:
+                        logger.error("CONTROLNET_DEPTH requires 'image' and 'depth_image' params, task %s", task.task_id)
+                        await store.update(task.task_id, status=TaskStatus.FAILED, error="CONTROLNET_DEPTH requires 'image' and 'depth_image' params")
+                        return
+                    workflow = build_controlnet_depth_workflow(
+                        image_name=src_img,
+                        depth_image_name=depth_img,
+                        prompt=task.params.get("prompt", ""),
+                        negative_prompt=task.params.get("negative_prompt", ""),
+                        width=task.params.get("width", 1024),
+                        height=task.params.get("height", 1024),
+                        steps=task.params.get("steps", 28),
+                        cfg_scale=task.params.get("cfg_scale", 3.5),
+                        strength=task.params.get("strength", 1.0),
+                        seed=task.params.get("seed"),
+                        filename_prefix=task.params.get("filename_prefix", "controlnet_depth"),
+                    )
+                    logger.info("Auto-built ControlNet Depth workflow for task %s", task.task_id)
+                elif task.type == TaskType.WAN_I2V:
+                    from src.v6.engines.workflow_builder import build_wan21_i2v_dual_stage_workflow
+                    src_img = task.params.get("image", "")
+                    if not src_img:
+                        logger.error("WAN_I2V requires 'image' param, task %s", task.task_id)
+                        await store.update(task.task_id, status=TaskStatus.FAILED, error="WAN_I2V requires 'image' param")
+                        return
+                    workflow = build_wan21_i2v_dual_stage_workflow(
+                        image_name=src_img,
+                        prompt=task.params.get("prompt", ""),
+                        width=task.params.get("width", 832),
+                        height=task.params.get("height", 480),
+                        length=task.params.get("length", 81),
+                        steps=task.params.get("steps", 20),
+                        cfg=task.params.get("cfg", 3.5),
+                        shift=task.params.get("shift", 8.0),
+                        high_noise_end=task.params.get("high_noise_end", 10.0),
+                        seed=task.params.get("seed"),
+                        filename_prefix=task.params.get("filename_prefix", "wan_i2v"),
+                    )
+                    logger.info("Auto-built Wan 2.1 I2V dual-stage workflow for task %s", task.task_id)
+                elif task.type == TaskType.UPSCALE:
+                    from src.v6.engines.workflow_builder import build_upscale_workflow
+                    src_img = task.params.get("image", "")
+                    if not src_img:
+                        logger.error("UPSCALE requires 'image' param, task %s", task.task_id)
+                        await store.update(task.task_id, status=TaskStatus.FAILED, error="UPSCALE requires 'image' param")
+                        return
+                    workflow = build_upscale_workflow(
+                        image_name=src_img,
+                        upscale_model_name=task.params.get("upscale_model_name", "4x-UltraSharp.pth"),
+                        filename_prefix=task.params.get("filename_prefix", "upscaled"),
+                    )
+                    logger.info("Auto-built Upscale workflow for task %s", task.task_id)
+                elif task.type == TaskType.FACE_RESTORE:
+                    from src.v6.engines.workflow_builder import build_face_restore_workflow
+                    src_img = task.params.get("image", "")
+                    if not src_img:
+                        logger.error("FACE_RESTORE requires 'image' param, task %s", task.task_id)
+                        await store.update(task.task_id, status=TaskStatus.FAILED, error="FACE_RESTORE requires 'image' param")
+                        return
+                    workflow = build_face_restore_workflow(
+                        image_name=src_img,
+                        model_name=task.params.get("model_name", "codeformer.pth"),
+                        filename_prefix=task.params.get("filename_prefix", "face_restored"),
+                    )
+                    logger.info("Auto-built Face Restore workflow for task %s", task.task_id)
                 else:
                     from src.v6.engines.workflow_builder import build_txt2img_workflow
                     workflow = build_txt2img_workflow(

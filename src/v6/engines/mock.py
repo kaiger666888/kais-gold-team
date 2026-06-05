@@ -139,6 +139,9 @@ class MockEngine(BaseEngine):
         return {
             "status": EngineStatus.ONLINE.value,
             "available": True,
+            "vram_total_mb": 24576,
+            "vram_available_mb": 24576,
+            "gpu_utilization_pct": 0.0,
             "running_jobs": sum(
                 1 for j in self._jobs.values() if j["status"] == "running"
             ),
