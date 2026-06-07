@@ -9,3 +9,5 @@ data/
 *.whl
 wheels/
 additional_src/
+.tts_logs/
+.tts_pids/

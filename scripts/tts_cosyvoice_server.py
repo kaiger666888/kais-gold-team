@@ -29,6 +29,7 @@ import torch
 COSYVOICE_ROOT = os.path.expanduser("~/CosyVoice")
 if COSYVOICE_ROOT not in sys.path:
     sys.path.insert(0, COSYVOICE_ROOT)
+    sys.path.insert(0, os.path.join(COSYVOICE_ROOT, "third_party", "Matcha-TTS"))
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field

@@ -81,7 +81,13 @@ def load_model(device: str):
     global _model, _sr, _device
     logger.info("Loading Chatterbox-Turbo on %s...", device)
     from chatterbox.tts_turbo import ChatterboxTurboTTS
-    _model = ChatterboxTurboTTS.from_pretrained(device)
+    # Try from_local first (skip HuggingFace download), fallback to from_pretrained
+    try:
+        _model = ChatterboxTurboTTS.from_local(os.path.expanduser("~/chatterbox/models/base"), device)
+        logger.info("Loaded Chatterbox-Turbo from local models/base")
+    except Exception as e:
+        logger.warning("from_local failed (%s), trying from_pretrained", e)
+        _model = ChatterboxTurboTTS.from_pretrained(device)
     _sr = _model.sr
     _device = device
     logger.info("Chatterbox-Turbo loaded (sr=%d, device=%s)", _sr, _device)
