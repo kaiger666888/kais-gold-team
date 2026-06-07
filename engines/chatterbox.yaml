@@ -1,0 +1,52 @@
+# Chatterbox-Turbo English TTS Engine (Track 2: 英文轨)
+# 3060Ti 常驻服务 | ~2GB VRAM | Port 9881
+# API: POST /tts  GET /health
+
+name: chatterbox
+engine: chatterbox
+docker_image: none  # runs as native service
+api_port: 9881
+api_host: "127.0.0.1"
+requires_gpu: true
+gpu_id: 1  # RTX 3060Ti (shares with gpt_sovits)
+mode: http
+vram_gb: 2.0
+
+task_types:
+  tts_en:
+    submit_endpoint: /tts
+    health_endpoint: /health
+    poll_timeout: 60
+    poll_interval: 1.0
+    params:
+      text:
+        type: string
+        default: ""
+        description: "English text (supports paralinguistic tags [laugh] [sigh] etc)"
+      audio_prompt_path:
+        type: string
+        default: ""
+        description: "Reference audio for voice cloning"
+      temperature:
+        type: float
+        default: 0.8
+        description: "Sampling temperature 0.05-2.0"
+      speed:
+        type: float
+        default: 1.0
+        description: "Speech speed"
+      top_p:
+        type: float
+        default: 0.95
+        description: "Top-p sampling"
+      top_k:
+        type: int
+        default: 1000
+        description: "Top-k sampling"
+      seed:
+        type: int
+        default: 0
+        description: "Random seed (0=random)"
+    assets:
+      required: []
+      accept: [audio]

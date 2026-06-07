@@ -1,33 +1,56 @@
-# CosyVoice TTS Engine (Node 28)
-# Local image: kais-gold-team:cosyvoice2
-# GPU: RTX 3060Ti, ~4GB VRAM
+# CosyVoice 3.0 Bilingual TTS Engine (Track 3: 双语轨)
+# 3090 应急服务 | ~6GB VRAM | Port 9882
+# API: POST /tts  GET /health
 
 name: cosyvoice
 engine: cosyvoice
-docker_image: kais-gold-team:cosyvoice2
-api_port: 9880
+docker_image: none  # runs as native service
+api_port: 9882
+api_host: "127.0.0.1"
 requires_gpu: true
-mode: api
+gpu_id: 0  # RTX 3090
+mode: http
+vram_gb: 6.0
 
 task_types:
-  cosyvoice_tts:
+  tts_bilingual:
     submit_endpoint: /tts
     health_endpoint: /health
-    poll_timeout: 60
+    poll_timeout: 120
     poll_interval: 1.0
     params:
       text:
         type: string
         default: ""
+        description: "Text to synthesize (zh/en mixed)"
+      mode:
+        type: string
+        default: "instruct2"
+        description: "instruct2/zero_shot/cross_lingual/vc"
       speaker:
         type: string
-        default: "default"
+        default: ""
+        description: "Preset speaker name (instruct2 mode)"
+      instruct_text:
+        type: string
+        default: ""
+        description: "Natural language instruction for voice control"
+      ref_audio:
+        type: string
+        default: ""
+        description: "Reference audio for zero_shot/cross_lingual/vc"
+      ref_text:
+        type: string
+        default: ""
+        description: "Reference transcript for zero_shot mode"
+      language:
+        type: string
+        default: "auto"
+        description: "Language code zh/en/auto"
       speed:
         type: float
         default: 1.0
-      language:
-        type: string
-        default: "zh"
+        description: "Speech speed"
     assets:
       required: []
-      accept: []
+      accept: [audio]

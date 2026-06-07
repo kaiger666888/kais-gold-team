@@ -1,337 +1,522 @@
-"""TTS Engine — runs CosyVoice3 / edge-tts via subprocess for gold-team V6.
+"""Three-Track TTS Engine System for kais-gold-team V6.
 
-Unlike ComfyUIEngine which talks to ComfyUI via HTTP, this engine invokes
-the standalone ``scripts/tts_infer.py`` script directly. This avoids the need
-for a ComfyUI CosyVoice custom node while still producing real audio output.
+Architecture:
+    Track 1 (中文轨): GPT-SoVITS — Chinese TTS, 3060Ti, :9880
+    Track 2 (英文轨): Chatterbox-Turbo — English TTS, 3060Ti, :9881
+    Track 3 (双语轨): CosyVoice 3.0 — Bilingual TTS, 3090, :9882
+
+All three engines expose a common HTTP API:
+    POST /tts  { text, ...params }  →  { audio_url, duration_sec }
+    GET  /health                    →  { status, vram_used_mb }
+
+The TTSTracker acts as a unified facade that auto-routes by language.
 
 Lifecycle:
-    submit() → records params, returns job_id
-    poll()   → checks subprocess status
-    get_output() → returns artifact URLs for completed jobs
-
-Supported CosyVoice3 modes:
-    - instruct2: Natural language instruction control (default)
-    - zero_shot: Voice cloning with reference audio + transcript
-    - cross_lingual: Cross-language synthesis
-    - vc: Voice conversion
+    Each TTS service runs independently as a FastAPI server.
+    The engine communicates via HTTP — no subprocess spawning.
+    If a service is down, the tracker returns a clear error with
+    suggested fallback track.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import time
 import uuid
-from pathlib import Path
+from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Optional
+
+import aiohttp
 
 from src.v6.engines.base import BaseEngine, EngineCapabilities, EngineStatus
 
 logger = logging.getLogger(__name__)
 
-# Output directory for TTS files
-OUTPUT_ROOT = os.environ.get("KAIS_OUTPUT_ROOT", "/mnt/agents/output")
-
-# Path to the TTS inference script (relative to repo root)
-_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))  # src/v6/engines/
-_REPO_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, "..", "..", ".."))
-SCRIPT_PATH = os.path.join(_REPO_ROOT, "scripts", "tts_infer.py")
+OUTPUT_ROOT = "/mnt/agents/output"
 
 
+# ─── TTS Track Definition ───
+
+class TTSTrack(str, Enum):
+    ZH = "zh"          # GPT-SoVITS
+    EN = "en"          # Chatterbox-Turbo
+    BILINGUAL = "bilingual"  # CosyVoice
+
+
+@dataclass
+class TTSServiceConfig:
+    """Configuration for a single TTS HTTP service."""
+    name: str
+    track: TTSTrack
+    host: str = "127.0.0.1"
+    port: int = 9880
+    health_endpoint: str = "/health"
+    tts_endpoint: str = "/tts"
+    timeout_sec: float = 120.0
+    vram_gb: float = 4.0
+    gpu_id: int = 0
+
+    @property
+    def base_url(self) -> str:
+        return f"http://{self.host}:{self.port}"
+
+    @property
+    def tts_url(self) -> str:
+        return f"{self.base_url}{self.tts_endpoint}"
+
+    @property
+    def health_url(self) -> str:
+        return f"{self.base_url}{self.health_endpoint}"
+
+
+# Default service configs (matches engine YAML)
+DEFAULT_SERVICES: dict[TTSTrack, TTSServiceConfig] = {
+    TTSTrack.ZH: TTSServiceConfig(
+        name="GPT-SoVITS",
+        track=TTSTrack.ZH,
+        port=9880,
+        vram_gb=4.0,
+        gpu_id=1,  # 3060Ti
+        timeout_sec=60.0,
+    ),
+    TTSTrack.EN: TTSServiceConfig(
+        name="Chatterbox-Turbo",
+        track=TTSTrack.EN,
+        port=9881,
+        vram_gb=2.0,
+        gpu_id=1,  # 3060Ti
+        timeout_sec=60.0,
+    ),
+    TTSTrack.BILINGUAL: TTSServiceConfig(
+        name="CosyVoice-3.0",
+        track=TTSTrack.BILINGUAL,
+        port=9882,
+        vram_gb=6.0,
+        gpu_id=0,  # 3090
+        timeout_sec=120.0,
+    ),
+}
+
+
+# ─── Language Detection ───
+
+def detect_language(text: str) -> str:
+    """Simple CJK-based language detection.
+
+    Returns: 'zh' if >30% CJK characters, 'en' otherwise.
+    This is intentionally simple — the pipeline caller can override.
+    """
+    cjk_count = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
+    if len(text) > 0 and cjk_count / len(text) > 0.3:
+        return "zh"
+    return "en"
+
+
+# ─── HTTP TTS Job ───
+
+@dataclass
 class TTSJob:
-    """Tracks a single TTS subprocess job."""
-
-    def __init__(self, job_id: str, params: dict) -> None:
-        self.job_id = job_id
-        self.params = params
-        self.status: str = "queued"  # queued | running | completed | failed
-        self.progress: float = 0.0
-        self.output_path: str = ""
-        self.error: str = ""
-        self.backend: str = ""
-        self.duration_sec: float = 0.0
-        self.started_at: float = 0.0
-        self.process: Optional[asyncio.subprocess.Process] = None
+    """Tracks a single TTS HTTP request."""
+    job_id: str
+    track: TTSTrack
+    params: dict[str, Any]
+    status: str = "queued"  # queued | running | completed | failed
+    progress: float = 0.0
+    output_path: str = ""
+    error: str = ""
+    duration_sec: float = 0.0
+    service_name: str = ""
+    submitted_at: float = 0.0
 
 
-class TTSEngine(BaseEngine):
-    """TTS engine that runs ``scripts/tts_infer.py`` via subprocess.
+# ─── Individual Track Engine ───
 
-    Supports both CosyVoice3 (if installed) and edge-tts (fallback).
-    All CosyVoice3 parameters are transparently forwarded.
+class HTTPTTSEngine(BaseEngine):
+    """HTTP-based TTS engine for a single track.
+
+    Talks to the TTS service via HTTP POST /tts.
+    Handles health checks, timeout, and error reporting.
     """
 
-    def __init__(self, output_root: str = OUTPUT_ROOT) -> None:
+    def __init__(self, config: TTSServiceConfig, output_root: str = OUTPUT_ROOT) -> None:
+        self._config = config
         self._output_root = output_root
         self._jobs: dict[str, TTSJob] = {}
-        self._script_path = os.path.abspath(SCRIPT_PATH)
-        self._python = os.environ.get("KAIS_TTS_PYTHON", "python3")
+        self._session: Optional[aiohttp.ClientSession] = None
+        self._healthy: bool | None = None  # None=unchecked
+        self._last_health_check: float = 0.0
 
     @property
     def name(self) -> str:
-        return "TTS Engine (CosyVoice3/edge-tts)"
+        return f"TTS-{self._config.track.value} ({self._config.name})"
 
     @property
     def engine_id(self) -> str:
-        return "tts-local"
+        return f"tts-{self._config.track.value}"
 
     @property
     def capabilities(self) -> EngineCapabilities:
         return EngineCapabilities(
-            supported_types=["tts"],
-            max_duration_sec=300.0,
-            vram_total_mb=6144,
-            vram_available_mb=6144,
-            models=["cosyvoice-3-0.5b-rl", "edge-tts"],
+            supported_types=[f"tts_{self._config.track.value}"],
+            max_duration_sec=self._config.timeout_sec,
+            vram_total_mb=int(self._config.vram_gb * 1024),
+            vram_available_mb=int(self._config.vram_gb * 1024),
+            models=[self._config.name],
         )
 
+    @property
+    def track(self) -> TTSTrack:
+        return self._config.track
+
+    async def _get_session(self) -> aiohttp.ClientSession:
+        if self._session is None or self._session.closed:
+            timeout = aiohttp.ClientTimeout(total=self._config.timeout_sec)
+            self._session = aiohttp.ClientSession(timeout=timeout)
+        return self._session
+
     async def start(self) -> None:
-        """Verify the TTS script exists."""
-        if not os.path.isfile(self._script_path):
-            logger.warning("TTS script not found at %s — TTS tasks will fail", self._script_path)
-        else:
-            logger.info("TTS engine ready, script: %s", self._script_path)
+        logger.info(
+            "TTS engine %s initialized: %s (port %d, GPU %d, ~%.0fGB)",
+            self._config.track.value, self._config.name,
+            self._config.port, self._config.gpu_id, self._config.vram_gb,
+        )
+        # Initial health check (non-blocking)
+        try:
+            await self.health()
+        except Exception as e:
+            logger.warning("TTS engine %s initial health check failed: %s", self._config.track.value, e)
 
     async def stop(self) -> None:
-        """Cancel all running jobs."""
-        for job in self._jobs.values():
-            if job.process and job.process.returncode is None:
-                job.process.kill()
+        if self._session and not self._session.closed:
+            await self._session.close()
+            self._session = None
         self._jobs.clear()
 
     async def submit(self, workflow: dict[str, Any], params: dict[str, Any] | None = None) -> str:
-        """Submit a TTS task.
-
-        Args:
-            workflow: Dict with TTS parameters. Required keys depend on mode:
-              - text (str, required): Text to synthesize (except vc mode)
-              - mode (str, optional): instruct2/zero_shot/cross_lingual/vc (default: instruct2)
-              - voice (str, optional): Preset voice name (default: default)
-              - speed (float, optional): Speech speed 0.5-2.0 (default: 1.0)
-              - backend (str, optional): cosyvoice/edge-tts/auto (default: auto)
-              - output_path (str, optional): Output file path
-              - instruct (str, optional): Custom instruction text (overrides voice/emotion/language)
-              - emotion (str, optional): happy/sad/angry/neutral (default: neutral)
-              - language (str, optional): Language code zh/en/ja/ko/de/... (default: auto)
-              - prompt_wav (str, optional): Reference audio for instruct2 voice stamping
-              - ref_audio (str, optional): Reference audio for zero_shot/cross_lingual/vc
-              - ref_text (str, optional): Reference transcript for zero_shot (required)
-              - prompt_audio (str, optional): Source audio for vc mode (required)
-              - stream (bool, optional): Enable streaming output (default: false)
-            params: Optional dict with task_id for output naming.
-
-        Returns:
-            Job ID for tracking.
-        """
+        """Submit TTS via HTTP POST to the service."""
         job_id = str(uuid.uuid4())[:12]
         params = params or {}
         task_id = params.get("task_id", job_id)
 
-        # === Extract required params ===
-        text = workflow.get("text", "")
-        voice = workflow.get("voice", "default")
-        speed = workflow.get("speed", 1.0)
-        backend = workflow.get("backend", "auto")
-        mode = workflow.get("mode", "instruct2")
-
-        # Validate required params per mode
-        if mode == "vc":
-            if not workflow.get("ref_audio"):
-                raise ValueError("vc mode requires 'ref_audio' (target voice)")
-            if not workflow.get("prompt_audio"):
-                raise ValueError("vc mode requires 'prompt_audio' (source content)")
-        elif mode == "zero_shot":
-            if not text:
-                raise ValueError("TTS requires 'text' parameter")
-            if not workflow.get("ref_audio"):
-                raise ValueError("zero_shot mode requires 'ref_audio' (voice to clone)")
-            if not workflow.get("ref_text"):
-                raise ValueError("zero_shot mode requires 'ref_text' (reference transcript)")
-        else:
-            if not text:
-                raise ValueError("TTS requires 'text' parameter")
-
-        # === Determine output path ===
+        # Extract output path
         output_path = workflow.get("output_path", "")
         if not output_path:
-            output_path = os.path.join(self._output_root, task_id, "voice.wav")
+            output_path = f"{self._output_root}/{task_id}/voice.wav"
 
-        # Store all params for debugging
-        job = TTSJob(job_id=job_id, params={
-            "text": text,
-            "voice": voice,
-            "speed": speed,
-            "backend": backend,
-            "mode": mode,
-            "output_path": output_path,
-            "task_id": task_id,
-            **{k: v for k, v in workflow.items() if k not in ("text", "voice", "speed", "backend", "mode", "output_path")},
-        })
+        job = TTSJob(
+            job_id=job_id,
+            track=self._config.track,
+            params=workflow,
+            service_name=self._config.name,
+            submitted_at=time.monotonic(),
+        )
         self._jobs[job_id] = job
 
-        # === Build subprocess command ===
-        cmd = [
-            self._python, self._script_path,
-            "--output", output_path,
-            "--mode", mode,
-            "--voice", voice,
-            "--speed", str(speed),
-            "--backend", backend,
-        ]
-
-        # Add text (vc mode doesn't need it, but script handles empty string)
-        if text:
-            cmd.extend(["--text", text])
-
-        # Add optional CosyVoice3 params
-        _optional_str = [
-            ("instruct", "instruct"),
-            ("emotion", "emotion"),
-            ("language", "language"),
-            ("prompt_wav", "prompt-wav"),
-            ("ref_audio", "ref-audio"),
-            ("ref_text", "ref-text"),
-            ("prompt_audio", "prompt-audio"),
-        ]
-        for workflow_key, cli_flag in _optional_str:
-            val = workflow.get(workflow_key, "")
-            if val:
-                cmd.extend([f"--{cli_flag}", str(val)])
-
-        # Add boolean flags
-        if workflow.get("stream", False):
-            cmd.append("--stream")
+        # Build request payload
+        payload = {k: v for k, v in workflow.items() if k != "output_path"}
+        payload["output_path"] = output_path
 
         logger.info(
-            "TTS job %s: submitting (mode=%s, voice=%s, backend=%s, text=%s)",
-            job_id, mode, voice, backend, text[:50],
+            "TTS-%s job %s: submitting to %s (text=%s)",
+            self._config.track.value, job_id, self._config.tts_url,
+            str(workflow.get("text", ""))[:60],
         )
 
         try:
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            job.process = process
             job.status = "running"
-            job.started_at = time.monotonic()
+            session = await self._get_session()
 
-            # Fire-and-forget: background task to collect output
-            asyncio.create_task(self._watch_job(job))
+            async with session.post(self._config.tts_url, json=payload) as resp:
+                elapsed = time.monotonic() - job.submitted_at
+
+                if resp.status == 200:
+                    result = await resp.json()
+                    job.status = "completed"
+                    job.progress = 100.0
+                    job.output_path = result.get("audio_path", output_path)
+                    job.duration_sec = result.get("duration_sec", round(elapsed, 2))
+                    job.error = ""
+                    logger.info(
+                        "TTS-%s job %s completed in %.1fs (duration=%.1fs, output=%s)",
+                        self._config.track.value, job_id, elapsed,
+                        job.duration_sec, job.output_path,
+                    )
+                else:
+                    error_text = await resp.text()
+                    job.status = "failed"
+                    job.error = f"HTTP {resp.status}: {error_text[:300]}"
+                    logger.error(
+                        "TTS-%s job %s failed: HTTP %d — %s",
+                        self._config.track.value, job_id, resp.status, error_text[:200],
+                    )
+
+        except asyncio.TimeoutError:
+            job.status = "failed"
+            job.error = f"Timeout after {self._config.timeout_sec}s"
+            logger.error("TTS-%s job %s timed out", self._config.track.value, job_id)
+
+        except aiohttp.ClientError as e:
+            job.status = "failed"
+            job.error = f"Connection error: {e}"
+            logger.error("TTS-%s job %s connection error: %s", self._config.track.value, job_id, e)
 
         except Exception as e:
             job.status = "failed"
             job.error = str(e)
-            logger.error("TTS job %s failed to start: %s", job_id, e)
+            logger.error("TTS-%s job %s unexpected error: %s", self._config.track.value, job_id, e)
 
         return job_id
 
-    async def _watch_job(self, job: TTSJob) -> None:
-        """Background task that waits for subprocess completion and parses output."""
-        try:
-            stdout, stderr = await job.process.communicate()
-            elapsed = time.monotonic() - job.started_at
-
-            if job.process.returncode == 0:
-                # Parse JSON output from script
-                import json
-                try:
-                    result = json.loads(stdout.decode().strip().split("\n")[-1])
-                except (json.JSONDecodeError, IndexError):
-                    result = {}
-
-                job.status = "completed"
-                job.progress = 100.0
-                job.output_path = result.get("output_path", job.params.get("output_path", ""))
-                job.backend = result.get("backend", "unknown")
-                job.duration_sec = result.get("duration_sec", round(elapsed, 2))
-                logger.info(
-                    "TTS job %s completed in %.1fs (backend=%s, mode=%s, output=%s)",
-                    job.job_id, elapsed, job.backend, job.params.get("mode", "?"), job.output_path,
-                )
-            else:
-                error_output = stderr.decode().strip() if stderr else stdout.decode().strip()
-                job.status = "failed"
-                job.error = error_output[:500]
-                logger.error("TTS job %s failed (rc=%d): %s", job.job_id, job.process.returncode, error_output[:200])
-
-        except Exception as e:
-            job.status = "failed"
-            job.error = str(e)
-            logger.error("TTS job %s watch error: %s", job.job_id, e)
-
     async def poll(self, engine_job_id: str) -> dict[str, Any]:
-        """Poll TTS job status."""
         job = self._jobs.get(engine_job_id)
         if not job:
             return {"status": "failed", "progress": 0.0, "error": "Unknown job ID"}
-
-        result: dict[str, Any] = {
-            "status": job.status,
-            "progress": job.progress,
-        }
+        result: dict[str, Any] = {"status": job.status, "progress": job.progress}
         if job.status == "failed":
             result["error"] = job.error
         return result
 
     async def get_output(self, engine_job_id: str) -> dict[str, Any]:
-        """Get output artifacts for completed TTS job."""
         job = self._jobs.get(engine_job_id)
         if not job or job.status != "completed":
             return {"outputs": []}
 
-        output_path = job.output_path
-        if not output_path or not os.path.isfile(output_path):
-            return {"outputs": []}
-
-        # Build a file:// URL for local access, or relative path for HTTP serving
         artifacts = [{
-            "url": f"file://{output_path}",
-            "path": output_path,
+            "url": f"file://{job.output_path}",
+            "path": job.output_path,
             "type": "audio",
-            "format": "wav" if output_path.endswith(".wav") else "mp3",
-            "backend": job.backend,
-            "mode": job.params.get("mode", "instruct2"),
+            "format": "wav",
+            "track": job.track.value,
+            "service": job.service_name,
             "duration_sec": job.duration_sec,
         }]
         return {"outputs": artifacts}
 
     async def cancel(self, engine_job_id: str) -> bool:
-        """Cancel a running TTS job."""
+        # HTTP TTS is synchronous — cancel only works for queued jobs
         job = self._jobs.get(engine_job_id)
-        if not job or job.status not in ("queued", "running"):
+        if not job or job.status != "queued":
             return False
-
-        if job.process and job.process.returncode is None:
-            job.process.kill()
         job.status = "failed"
         job.error = "Cancelled"
-        logger.info("TTS job %s cancelled", engine_job_id)
         return True
 
     async def health(self) -> dict[str, Any]:
-        """Check TTS engine health."""
-        script_ok = os.path.isfile(self._script_path)
-        output_ok = os.path.isdir(self._output_root) or os.path.isdir(os.path.dirname(self._output_root))
+        now = time.monotonic()
+        # Cache health check for 30s
+        if self._healthy is not None and (now - self._last_health_check) < 30.0:
+            status = EngineStatus.ONLINE if self._healthy else EngineStatus.OFFLINE
+            return {
+                "status": status.value,
+                "available": self._healthy,
+                "track": self._config.track.value,
+                "service": self._config.name,
+                "port": self._config.port,
+                "cached": True,
+            }
 
-        # Quick check: edge-tts available?
         try:
-            import edge_tts  # noqa: F401
-            backends = ["edge-tts"]
-        except ImportError:
-            backends = []
+            session = await self._get_session()
+            async with session.get(self._config.health_url, timeout=aiohttp.ClientTimeout(total=5.0)) as resp:
+                if resp.status == 200:
+                    body = await resp.json()
+                    self._healthy = True
+                    self._last_health_check = now
+                    return {
+                        "status": EngineStatus.ONLINE.value,
+                        "available": True,
+                        "track": self._config.track.value,
+                        "service": self._config.name,
+                        "port": self._config.port,
+                        "vram_used_mb": body.get("vram_used_mb", 0),
+                        "model_loaded": body.get("model_loaded", True),
+                    }
+        except Exception as e:
+            logger.debug("TTS-%s health check failed: %s", self._config.track.value, e)
 
-        # Check CosyVoice
-        cosy_root = os.environ.get("COSYVOICE_ROOT", os.path.expanduser("~/CosyVoice"))
-        if os.path.isdir(cosy_root):
-            backends.append("cosyvoice")
-
-        status = EngineStatus.ONLINE if script_ok else EngineStatus.OFFLINE
+        self._healthy = False
+        self._last_health_check = now
         return {
-            "status": status.value,
-            "available": script_ok,
-            "backends": backends,
-            "output_root": self._output_root,
-            "script_path": self._script_path,
+            "status": EngineStatus.OFFLINE.value,
+            "available": False,
+            "track": self._config.track.value,
+            "service": self._config.name,
+            "port": self._config.port,
+            "error": "Service not reachable",
         }
+
+
+# ─── Unified TTS Tracker ───
+
+class TTSTracker(BaseEngine):
+    """Unified TTS facade that auto-routes to the correct track engine.
+
+    Routing logic:
+    - Explicit track specified → use that engine
+    - language='zh' → Track 1 (GPT-SoVITS)
+    - language='en' → Track 2 (Chatterbox-Turbo)
+    - language='auto' or mixed → detect, route accordingly
+    - Fallback: if target engine is offline, suggest alternatives
+    """
+
+    def __init__(
+        self,
+        services: dict[TTSTrack, TTSServiceConfig] | None = None,
+        output_root: str = OUTPUT_ROOT,
+    ) -> None:
+        self._output_root = output_root
+        self._services = services or DEFAULT_SERVICES
+        self._engines: dict[TTSTrack, HTTPTTSEngine] = {}
+        self._build_engines()
+
+    def _build_engines(self) -> None:
+        for track, config in self._services.items():
+            self._engines[track] = HTTPTTSEngine(config, self._output_root)
+
+    @property
+    def name(self) -> str:
+        return "TTS Tracker (三轨调度)"
+
+    @property
+    def engine_id(self) -> str:
+        return "tts-tracker"
+
+    @property
+    def capabilities(self) -> EngineCapabilities:
+        all_models = []
+        total_vram = 0
+        for track, engine in self._engines.items():
+            all_models.extend(engine.capabilities.models)
+            total_vram += engine.capabilities.vram_total_mb
+        return EngineCapabilities(
+            supported_types=["tts", "tts_zh", "tts_en", "tts_bilingual"],
+            max_duration_sec=120.0,
+            vram_total_mb=total_vram,
+            vram_available_mb=total_vram,
+            models=all_models,
+        )
+
+    @property
+    def engines(self) -> dict[TTSTrack, HTTPTTSEngine]:
+        return self._engines
+
+    async def start(self) -> None:
+        for track, engine in self._engines.items():
+            try:
+                await engine.start()
+            except Exception as e:
+                logger.warning("TTS engine %s failed to start: %s", track.value, e)
+        logger.info("TTS Tracker started with %d tracks", len(self._engines))
+
+    async def stop(self) -> None:
+        for engine in self._engines.values():
+            await engine.stop()
+
+    def _pick_track(self, workflow: dict[str, Any]) -> TTSTrack:
+        """Determine which track to use based on workflow params."""
+        # 1. Explicit track override
+        explicit = workflow.get("track", "")
+        if explicit in TTSTrack.__members__.values():
+            return TTSTrack(explicit)
+
+        # 2. Language-based routing
+        language = workflow.get("language", "auto").lower()
+        if language == "zh":
+            return TTSTrack.ZH
+        if language == "en":
+            return TTSTrack.EN
+        if language == "bilingual":
+            return TTSTrack.BILINGUAL
+
+        # 3. Auto-detect from text
+        text = workflow.get("text", "")
+        detected = detect_language(text)
+        return TTSTrack.ZH if detected == "zh" else TTSTrack.EN
+
+    async def submit(self, workflow: dict[str, Any], params: dict[str, Any] | None = None) -> str:
+        """Submit TTS — auto-routes to the appropriate track."""
+        track = self._pick_track(workflow)
+        engine = self._engines[track]
+
+        # Check health first
+        health = await engine.health()
+        if not health.get("available"):
+            # Fallback: try bilingual track for any language
+            bilingual_engine = self._engines.get(TTSTrack.BILINGUAL)
+            if bilingual_engine and bilingual_engine is not engine:
+                bh = await bilingual_engine.health()
+                if bh.get("available"):
+                    logger.warning(
+                        "TTS track %s offline, falling back to bilingual for job",
+                        track.value,
+                    )
+                    return await bilingual_engine.submit(workflow, params)
+            raise RuntimeError(
+                f"TTS track '{track.value}' ({engine.name}) is offline and no fallback available. "
+                f"Start the service: {engine._config.base_url}"
+            )
+
+        # Inject track info
+        workflow_copy = {**workflow, "track": track.value}
+        return await engine.submit(workflow_copy, params)
+
+    async def poll(self, engine_job_id: str) -> dict[str, Any]:
+        """Poll across all track engines."""
+        for engine in self._engines.values():
+            result = await engine.poll(engine_job_id)
+            if result["status"] != "failed" or "Unknown job" not in result.get("error", ""):
+                result["track"] = engine.track.value
+                return result
+        return {"status": "failed", "progress": 0.0, "error": "Unknown job ID"}
+
+    async def get_output(self, engine_job_id: str) -> dict[str, Any]:
+        for engine in self._engines.values():
+            result = await engine.get_output(engine_job_id)
+            if result["outputs"]:
+                return result
+        return {"outputs": []}
+
+    async def cancel(self, engine_job_id: str) -> bool:
+        for engine in self._engines.values():
+            if await engine.cancel(engine_job_id):
+                return True
+        return False
+
+    async def health(self) -> dict[str, Any]:
+        """Report health for all tracks."""
+        tracks = {}
+        all_online = True
+        for track, engine in self._engines.items():
+            h = await engine.health()
+            tracks[track.value] = h
+            if not h.get("available"):
+                all_online = False
+
+        online_count = sum(1 for t in tracks.values() if t.get("available"))
+        return {
+            "status": EngineStatus.ONLINE.value if all_online else EngineStatus.BUSY.value if online_count > 0 else EngineStatus.OFFLINE.value,
+            "available": all_online,
+            "tracks": tracks,
+            "online_tracks": online_count,
+            "total_tracks": len(self._engines),
+            "routing_summary": {
+                "zh": "GPT-SoVITS (:9880)",
+                "en": "Chatterbox-Turbo (:9881)",
+                "bilingual": "CosyVoice-3.0 (:9882)",
+            },
+        }
+
+    # ─── Convenience: direct submit to specific track ───
+
+    async def submit_zh(self, text: str, **kwargs) -> str:
+        """Submit Chinese TTS directly to GPT-SoVITS."""
+        return await self._engines[TTSTrack.ZH].submit({"text": text, **kwargs})
+
+    async def submit_en(self, text: str, **kwargs) -> str:
+        """Submit English TTS directly to Chatterbox-Turbo."""
+        return await self._engines[TTSTrack.EN].submit({"text": text, **kwargs})
+
+    async def submit_bilingual(self, text: str, **kwargs) -> str:
+        """Submit bilingual TTS directly to CosyVoice."""
+        return await self._engines[TTSTrack.BILINGUAL].submit({"text": text, **kwargs})

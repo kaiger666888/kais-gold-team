@@ -38,6 +38,7 @@ ACESTEP_CHECKPOINTS = os.environ.get("ACESTEP_CHECKPOINTS", "/opt/acestep/checkp
 _TASK_TYPE_MAP = {
     "audio_generate": "text2music",
     "music_generation": "text2music",
+    "music": "text2music",  # TaskType.MUSIC alias
     "music_cover": "cover",
     "music_remix": "text2music",
     "music_repaint": "repaint",
@@ -78,7 +79,7 @@ class ACEStepEngine(BaseEngine):
     @property
     def capabilities(self) -> EngineCapabilities:
         return EngineCapabilities(
-            supported_types=["audio_generate", "music_generation", "music_cover",
+            supported_types=["audio_generate", "music_generation", "music", "music_cover",
                              "music_repaint", "music_extract", "music_lego", "music_complete"],
             max_duration_sec=60.0,
             vram_total_mb=24576,
@@ -87,8 +88,12 @@ class ACEStepEngine(BaseEngine):
         )
 
     async def start(self) -> None:
-        if not os.path.isdir(ACESTEP_ROOT):
+        if not os.path.isdir(ACESTEP_ROOT) or ACESTEP_ROOT == "/nonexistent":
             logger.warning("ACE-Step root not found at %s — engine disabled", ACESTEP_ROOT)
+            return
+        # Skip startup if checkpoint dir missing (avoids 120s block)
+        if not os.path.isdir(ACESTEP_CHECKPOINTS):
+            logger.warning("ACE-Step checkpoints not found at %s — engine disabled", ACESTEP_CHECKPOINTS)
             return
 
         env = os.environ.copy()
@@ -103,6 +108,8 @@ class ACEStepEngine(BaseEngine):
             "ACESTEP_NO_INIT": "false",
             "HF_HUB_OFFLINE": "1",
             "TRANSFORMERS_OFFLINE": "1",
+            "HF_HOME": "/tmp/hf_cache",
+            "TRANSFORMERS_CACHE": "/tmp/hf_cache",
         })
 
         cmd = [

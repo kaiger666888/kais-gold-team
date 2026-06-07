@@ -34,6 +34,7 @@ _TASK_OUTPUT_FIELDS: dict[TaskType, dict[str, str]] = {
     TaskType.UPSCALE: {"image": "upscaled.png"},
     TaskType.FACE_RESTORE: {"image": "face_restored.png"},
     TaskType.IMAGE_TO_3D: {"image": "model.glb"},
+    TaskType.IMAGE_TO_3D_MV: {"image": "model_mv.glb"},
     TaskType.IMAGE_PULID: {"image": "pulid_flux.png", "thumbnail": "thumb.jpg"},
     TaskType.CONTROLNET_DEPTH: {"image": "controlnet_depth.png", "thumbnail": "thumb.jpg"},
     TaskType.WAN_I2V: {"video": "wan_i2v.mp4", "thumbnail": "thumb.jpg"},
@@ -252,7 +253,29 @@ class TaskExecutor:
                         seed=task.params.get("seed"),
                         filename_prefix=task.params.get("filename_prefix", "wan_i2v"),
                     )
-                    logger.info("Auto-built Wan 2.1 I2V dual-stage workflow for task %s", task.task_id)
+                    logger.info("Auto-built Wan 2.2 I2V dual-stage workflow for task %s", task.task_id)
+                elif task.type == TaskType.VIDEO_FINAL or task.type == TaskType.VIDEO_PREVIEW:
+                    # VIDEO_FINAL/VIDEO_PREVIEW = alias for wan_i2v (video output)
+                    from src.v6.engines.workflow_builder import build_wan21_i2v_dual_stage_workflow
+                    src_img = task.params.get("image", "")
+                    if not src_img:
+                        logger.error("VIDEO_FINAL/VIDEO_PREVIEW requires 'image' param, task %s", task.task_id)
+                        await store.update(task.task_id, status=TaskStatus.FAILED, error="VIDEO_FINAL/VIDEO_PREVIEW requires 'image' param")
+                        return
+                    workflow = build_wan21_i2v_dual_stage_workflow(
+                        image_name=src_img,
+                        prompt=task.params.get("prompt", ""),
+                        width=task.params.get("width", 832),
+                        height=task.params.get("height", 480),
+                        length=task.params.get("length", 81),
+                        steps=task.params.get("steps", 20),
+                        cfg=task.params.get("cfg", 3.5),
+                        shift=task.params.get("shift", 8.0),
+                        high_noise_end=task.params.get("high_noise_end", 10.0),
+                        seed=task.params.get("seed"),
+                        filename_prefix=task.params.get("filename_prefix", f"{task.type.value}_{task.task_id}"),
+                    )
+                    logger.info("Auto-built VIDEO_FINAL/VIDEO_PREVIEW workflow (=wan_i2v) for task %s", task.task_id)
                 elif task.type == TaskType.UPSCALE:
                     from src.v6.engines.workflow_builder import build_upscale_workflow
                     src_img = task.params.get("image", "")
@@ -275,22 +298,91 @@ class TaskExecutor:
                         return
                     workflow = build_face_restore_workflow(
                         image_name=src_img,
-                        model_name=task.params.get("model_name", "codeformer.pth"),
+                        model_name=task.params.get("model_name", "4x-UltraSharp.pth"),
                         filename_prefix=task.params.get("filename_prefix", "face_restored"),
                     )
                     logger.info("Auto-built Face Restore workflow for task %s", task.task_id)
-                else:
-                    from src.v6.engines.workflow_builder import build_txt2img_workflow
-                    workflow = build_txt2img_workflow(
+                elif task.type == TaskType.MUSIC or task.type == TaskType.SFX:
+                    # ACE-Step music generation — build workflow as a param dict
+                    workflow = {
+                        "task_type": task.type.value,
+                        "prompt": task.params.get("prompt", ""),
+                        "lyrics": task.params.get("lyrics", ""),
+                        "thinking": task.params.get("thinking", True),
+                        "sample_mode": task.params.get("sample_mode", False),
+                        "sample_query": task.params.get("sample_query", ""),
+                        "seed": task.params.get("seed", -1),
+                        "audio_format": task.params.get("audio_format", "wav"),
+                        "batch_size": task.params.get("batch_size", 1),
+                        "extra": {"acestep": task.params},
+                    }
+                    logger.info("Auto-built ACE-Step music workflow for task %s", task.task_id)
+                elif task.type == TaskType.IMAGE_TO_3D_MV:
+                    # Hunyuan3D-2mv multiview image-to-3D
+                    images = task.params.get("images", [])
+                    if not images:
+                        front = task.params.get("image", "") or task.params.get("front_image", "")
+                        if not front:
+                            logger.error("IMAGE_TO_3D_MV requires 'images' or 'image' param, task %s", task.task_id)
+                            await store.update(task.task_id, status=TaskStatus.FAILED, error="IMAGE_TO_3D_MV requires 'images' or 'image' param")
+                            return
+                        images = [front]
+                    workflow = {
+                        "front_image": images[0] if images else "",
+                        "left_image": images[1] if len(images) > 1 else "",
+                        "back_image": images[2] if len(images) > 2 else "",
+                        "right_image": images[3] if len(images) > 3 else "",
+                        **{k: v for k, v in task.params.items() if k not in ("images", "image")},
+                    }
+                    logger.info("Auto-built Hunyuan3D-2mv workflow for task %s", task.task_id)
+                elif task.type == TaskType.IMAGE_REFINE:
+                    # Image refine — use img2img with ControlNet (placeholder: txt2img for now)
+                    from src.v6.engines.workflow_builder import build_image_refine_workflow
+                    src_img = task.params.get("image", "")
+                    if not src_img:
+                        logger.error("IMAGE_REFINE requires 'image' param, task %s", task.task_id)
+                        await store.update(task.task_id, status=TaskStatus.FAILED, error="IMAGE_REFINE requires 'image' param")
+                        return
+                    workflow = build_image_refine_workflow(
+                        image_name=src_img,
                         prompt=task.params.get("prompt", ""),
                         negative_prompt=task.params.get("negative_prompt", ""),
-                        width=task.params.get("width", 1024),
-                        height=task.params.get("height", 1024),
-                        steps=task.params.get("steps", 20),
-                        cfg_scale=task.params.get("cfg_scale", 7.5),
+                        strength=task.params.get("strength", 0.5),
+                        steps=task.params.get("steps", 28),
+                        cfg_scale=task.params.get("cfg_scale", 3.5),
                         seed=task.params.get("seed"),
+                        filename_prefix=task.params.get("filename_prefix", "refined"),
                     )
-                    logger.info("Auto-built ComfyUI workflow for task %s", task.task_id)
+                    logger.info("Auto-built Image Refine workflow for task %s", task.task_id)
+                else:
+                    # Default: FLUX Dev FP8 for image_draw (most common)
+                    # Only use txt2img (CheckpointLoaderSimple) when an explicit SDXL model is given
+                    explicit_model = task.params.get("model", "")
+                    if explicit_model and "flux" not in explicit_model.lower() and "sd" in explicit_model.lower():
+                        from src.v6.engines.workflow_builder import build_txt2img_workflow
+                        workflow = build_txt2img_workflow(
+                            prompt=task.params.get("prompt", ""),
+                            negative_prompt=task.params.get("negative_prompt", ""),
+                            width=task.params.get("width", 1024),
+                            height=task.params.get("height", 1024),
+                            steps=task.params.get("steps", 20),
+                            cfg_scale=task.params.get("cfg_scale", 7.5),
+                            seed=task.params.get("seed"),
+                            checkpoint=explicit_model,
+                        )
+                        logger.info("Auto-built txt2img workflow for task %s (model=%s)", task.task_id, explicit_model)
+                    else:
+                        from src.v6.engines.workflow_builder import build_flux_dev_workflow
+                        workflow = build_flux_dev_workflow(
+                            prompt=task.params.get("prompt", ""),
+                            negative_prompt=task.params.get("negative_prompt", ""),
+                            width=task.params.get("width", 1024),
+                            height=task.params.get("height", 1024),
+                            steps=task.params.get("steps", 28),
+                            cfg_scale=task.params.get("cfg_scale", 3.5),
+                            seed=task.params.get("seed"),
+                        )
+                        logger.info("Auto-built FLUX Dev workflow for task %s (default)", task.task_id)
             engine_params = {"task_id": task.task_id, "type": task.type.value}
 
             engine_job_id = await engine.submit(workflow, engine_params)
@@ -397,20 +489,20 @@ class TaskExecutor:
         return {"outputs": downloaded}
 
     def _resolve_engine(self, engine_id: str, task: GenerationTask) -> Optional[BaseEngine]:
-        """Resolve engine by ID, preferring real engines over mock."""
-        # For TTS tasks, always prefer tts-local engine
-        if task.type == TaskType.TTS:
-            tts_engine = self._engines.get("tts-local")
-            if tts_engine:
-                return tts_engine
-            # Fall through to mock if TTS engine unavailable
+        """Resolve engine by ID, preferring real engines over mock.
 
-        # For image-to-3D tasks, prefer hunyuan3d-local engine
-        if task.type == TaskType.IMAGE_TO_3D:
-            hunyuan_engine = self._engines.get("hunyuan3d-local")
-            if hunyuan_engine:
-                return hunyuan_engine
-            # Fall through to other engines (e.g. comfyui TRELLIS)
+        For dedicated-engine task types, always prefer the specialized engine
+        regardless of what engine_id the router assigned.
+        """
+        # Dedicated engine routing — specialized engines override router
+        from src.v6.engine.router import DEDICATED_ENGINES
+        dedicated_id = DEDICATED_ENGINES.get(task.type)
+        if dedicated_id:
+            dedicated_engine = self._engines.get(dedicated_id)
+            if dedicated_engine:
+                return dedicated_engine
+            logger.warning("Dedicated engine '%s' for type %s not available, falling back",
+                           dedicated_id, task.type.value)
 
         # Direct match
         if engine_id in self._engines:
@@ -425,11 +517,12 @@ class TaskExecutor:
                         return engine
             logger.warning("Cloud engine '%s' not configured, falling back to mock", engine_id)
 
-        # For local/unset engine_id, prefer comfyui-local over mock
+        # For local/unset engine_id, prefer comfyui-primary > comfyui-local > comfyui-auxiliary over mock
         if engine_id is None or engine_id in ("local", "local-comfyui", "local-comfyui-mock"):
-            comfyui = self._engines.get("comfyui-local")
-            if comfyui and comfyui.status().value == "online":
-                return comfyui
+            for eid in ("comfyui-primary", "comfyui-local", "comfyui-auxiliary"):
+                comfyui = self._engines.get(eid)
+                if comfyui and comfyui.status().value == "online":
+                    return comfyui
             return self._engines.get("mock")
 
         # Fallback to mock

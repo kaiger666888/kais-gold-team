@@ -16,14 +16,19 @@ class TaskType(str, enum.Enum):
     IMAGE_DRAW = "image_draw"
     IMAGE_REFINE = "image_refine"
     TTS = "tts"
+    TTS_ZH = "tts_zh"              # GPT-SoVITS 中文语音合成
+    TTS_EN = "tts_en"              # Chatterbox-Turbo 英文语音合成
+    TTS_BILINGUAL = "tts_bilingual"  # CosyVoice 双语语音合成
     MUSIC = "music"
     SFX = "sfx"
     UPSCALE = "upscale"
     FACE_RESTORE = "face_restore"
     IMAGE_TO_3D = "image_to_3d"
     IMAGE_PULID = "image_pulid"            # PuLID character-consistency injection (FLUX + PuLID)
+    IMAGE_DRAW_IPADAPTER = "image_draw_ipadapter"  # IP-Adapter character/style consistency (FLUX + IP-Adapter)
     CONTROLNET_DEPTH = "controlnet_depth"  # ControlNet Depth geometry lock (FLUX + ControlNet)
     WAN_I2V = "wan_i2v"                    # Wan 2.1 I2V dual-stage video generation
+    IMAGE_TO_3D_MV = "image_to_3d_mv"          # Hunyuan3D-2mv multiview image-to-3D
 
 
 class TaskStatus(str, enum.Enum):

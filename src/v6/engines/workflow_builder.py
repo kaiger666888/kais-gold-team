@@ -31,10 +31,10 @@ def build_flux_dev_workflow(
     filename_prefix: str = "flux-dev",
     unet_name: str = "flux1-dev-fp8.safetensors",
     weight_dtype: str = "fp8_e4m3fn",
-    clip_name1: str = "clip_l/model.safetensors",
-    clip_name2: str = "t5xxl_fp16/model-00001-of-00002.safetensors",
+    clip_name1: str = "clip_l.safetensors",
+    clip_name2: str = "t5xxl_fp8_e4m3fn_scaled.safetensors",
     clip_type: str = "flux",
-    vae_name: str = "flux_vae/diffusion_pytorch_model.safetensors",
+    vae_name: str = "flux1-ae.safetensors",
 ) -> dict[str, Any]:
     """Build a FLUX Dev FP8 ComfyUI workflow via separate loaders.
 
@@ -150,10 +150,10 @@ def build_flux_ipadapter_workflow(
     filename_prefix: str = "flux-ipadapter",
     unet_name: str = "flux1-dev-fp8.safetensors",
     weight_dtype: str = "fp8_e4m3fn",
-    clip_name1: str = "clip_l/model.safetensors",
-    clip_name2: str = "t5xxl_fp16/model-00001-of-00002.safetensors",
+    clip_name1: str = "clip_l.safetensors",
+    clip_name2: str = "t5xxl_fp8_e4m3fn_scaled.safetensors",
     clip_type: str = "flux",
-    vae_name: str = "flux_vae/diffusion_pytorch_model.safetensors",
+    vae_name: str = "flux1-ae.safetensors",
     ipadapter_name: str = "ip-adapter.bin",
     clip_vision_name: str = "google/siglip-so400m-patch14-384",
 ) -> dict[str, Any]:
@@ -638,8 +638,8 @@ def build_flux_trellis_full_workflow(
     nodes["11"] = {
         "class_type": "DualCLIPLoader",
         "inputs": {
-            "clip_name1": "clip_l/model.safetensors",
-            "clip_name2": "t5xxl_fp16/model-00001-of-00002.safetensors",
+            "clip_name1": "clip_l.safetensors",
+            "clip_name2": "t5xxl_fp8_e4m3fn_scaled.safetensors",
             "type": "flux",
         },
     }
@@ -675,7 +675,7 @@ def build_flux_trellis_full_workflow(
     }
     nodes["15"] = {
         "class_type": "VAELoader",
-        "inputs": {"vae_name": "flux_vae/diffusion_pytorch_model.safetensors"},
+        "inputs": {"vae_name": "flux1-ae.safetensors"},
     }
     nodes["16"] = {
         "class_type": "VAEDecode",
@@ -755,17 +755,17 @@ def build_pulid_flux_workflow(
     filename_prefix: str = "pulid_flux",
     unet_name: str = "flux1-dev-fp8.safetensors",
     weight_dtype: str = "fp8_e4m3fn",
-    clip_name1: str = "clip_l/model.safetensors",
-    clip_name2: str = "t5xxl_fp16/model-00001-of-00002.safetensors",
+    clip_name1: str = "clip_l.safetensors",
+    clip_name2: str = "t5xxl_fp8_e4m3fn_scaled.safetensors",
     clip_type: str = "flux",
-    vae_name: str = "flux_vae/diffusion_pytorch_model.safetensors",
+    vae_name: str = "flux1-ae.safetensors",
     pulid_model: str = "ipadapter_pulid_flux_v0.9.0.safetensors",
-    clip_vision_name: str = "EVA02_CLIP_L_336_psz14_s6B.pt",
 ) -> dict[str, Any]:
     """Build a PuLID FLUX character-consistency injection ComfyUI workflow.
 
-    Uses PuLID to inject a reference face/character identity into FLUX generation.
-    Requires PuLID_ComfyUI custom node (ApplyPulid).
+    Uses PuLID_ComfyUI nodes: PulidModelLoader → PulidEvaClipLoader →
+    PulidInsightFaceLoader → ApplyPulid.  ApplyPulid requires eva_clip
+    (not CLIPVisionLoader) and face_analysis from PulidInsightFaceLoader.
 
     Args:
         image_name: Reference image filename in ComfyUI input/ directory.
@@ -784,8 +784,7 @@ def build_pulid_flux_workflow(
         clip_name2: T5-XXL model filename.
         clip_type: DualCLIPLoader type ("flux").
         vae_name: VAE model filename.
-        pulid_model: PuLID adapter weights filename.
-        clip_vision_name: EVA-CLIP vision encoder filename.
+        pulid_model: PuLID adapter weights filename (loras/ directory).
 
     Returns:
         ComfyUI API-format workflow dict.
@@ -837,31 +836,37 @@ def build_pulid_flux_workflow(
                 "image": image_name,
             },
         },
-        "7": {  # PuLID Model Loader
+        "7": {  # PulidModelLoader (param: pulid_file, loads from loras/ dir)
             "class_type": "PulidModelLoader",
             "inputs": {
-                "pulid_name": pulid_model,
+                "pulid_file": pulid_model,
             },
         },
-        "8": {  # CLIP Vision Loader (EVA02 for PuLID)
-            "class_type": "CLIPVisionLoader",
+        "8": {  # PulidEvaClipLoader (no required inputs, loads EVA-CLIP)
+            "class_type": "PulidEvaClipLoader",
+            "inputs": {},
+        },
+        "9": {  # PulidInsightFaceLoader (face analysis for PuLID)
+            "class_type": "PulidInsightFaceLoader",
             "inputs": {
-                "clip_name": clip_vision_name,
+                "provider": "CUDA",
             },
         },
-        "9": {  # ApplyPulid
+        "10": {  # ApplyPulid (needs eva_clip + face_analysis, not clip_vision)
             "class_type": "ApplyPulid",
             "inputs": {
                 "model": ["1", 0],
                 "pulid": ["7", 0],
+                "eva_clip": ["8", 0],
+                "face_analysis": ["9", 0],
                 "image": ["6", 0],
-                "clip_vision": ["8", 0],
+                "method": "fidelity",
                 "weight": weight,
                 "start_at": 0.0,
                 "end_at": 1.0,
             },
         },
-        "10": {  # KSampler (uses PuLID-modified model)
+        "11": {  # KSampler (uses PuLID-modified model)
             "class_type": "KSampler",
             "inputs": {
                 "seed": seed,
@@ -870,24 +875,24 @@ def build_pulid_flux_workflow(
                 "sampler_name": "euler",
                 "scheduler": "simple",
                 "denoise": 1.0,
-                "model": ["9", 0],
+                "model": ["10", 0],
                 "positive": ["4", 0],
                 "negative": ["4", 0],
                 "latent_image": ["5", 0],
             },
         },
-        "11": {  # VAEDecode
+        "12": {  # VAEDecode
             "class_type": "VAEDecode",
             "inputs": {
-                "samples": ["10", 0],
+                "samples": ["11", 0],
                 "vae": ["3", 0],
             },
         },
-        "12": {  # SaveImage
+        "13": {  # SaveImage
             "class_type": "SaveImage",
             "inputs": {
                 "filename_prefix": filename_prefix,
-                "images": ["11", 0],
+                "images": ["12", 0],
             },
         },
     }
@@ -908,11 +913,11 @@ def build_controlnet_depth_workflow(
     filename_prefix: str = "controlnet_depth",
     unet_name: str = "flux1-dev-fp8.safetensors",
     weight_dtype: str = "fp8_e4m3fn",
-    clip_name1: str = "clip_l/model.safetensors",
-    clip_name2: str = "t5xxl_fp16/model-00001-of-00002.safetensors",
+    clip_name1: str = "clip_l.safetensors",
+    clip_name2: str = "t5xxl_fp8_e4m3fn_scaled.safetensors",
     clip_type: str = "flux",
-    vae_name: str = "flux_vae/diffusion_pytorch_model.safetensors",
-    controlnet_name: str = "flux1-depth-dev",
+    vae_name: str = "flux1-ae.safetensors",
+    controlnet_name: str = "flux-depth-controlnet-v3.safetensors",
 ) -> dict[str, Any]:
     """Build a ControlNet Depth geometry-lock ComfyUI workflow.
 
@@ -1057,15 +1062,20 @@ def build_wan21_i2v_dual_stage_workflow(
     high_noise_end: float = 10.0,
     seed: int | None = None,
     filename_prefix: str = "wan_i2v",
-    diffusion_model_name: str = "wan2.1-i2v-14b-480p-Q4_K_M.gguf",
+    diffusion_model_name: str = "Wan2.2-I2V-A14B-HighNoise-Q8_0.gguf",
+    low_noise_model_name: str = "Wan2.2-I2V-A14B-LowNoise-Q8_0.gguf",
     vae_name: str = "wan_2.1_vae.safetensors",
-    clip_vision_name: str = "clip_vision/model.safetensors",
-    t5_name: str = "umt5-xxl-enc-bf16.safetensors",
+    clip_vision_name: str = "CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors",
+    t5_name: str = "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
 ) -> dict[str, Any]:
-    """Build a Wan 2.1 I2V 14B dual-stage video generation ComfyUI workflow.
+    """Build a Wan 2.2 I2V 14B dual-stage video generation ComfyUI workflow.
 
-    Uses two KSampler Advanced nodes (high-noise then low-noise) for
-    better video quality with the Wan 2.1 I2V 14B model.
+    Uses UnetLoaderGGUF (reads from diffusion_models/ dir) with two separate
+    GGUF models (HighNoise + LowNoise) and two KSamplerAdvanced nodes for
+    the official Wan 2.2 dual-stage pipeline.
+
+    WanImageToVideo requires positive, negative, vae as inputs (not image).
+    The start_image is passed as an optional input to WanImageToVideo.
 
     Args:
         image_name: Input image filename in ComfyUI input/ directory.
@@ -1079,7 +1089,8 @@ def build_wan21_i2v_dual_stage_workflow(
         high_noise_end: Step at which high-noise stage ends (default 10).
         seed: Random seed (shared across both stages).
         filename_prefix: Output filename prefix.
-        diffusion_model_name: Wan I2V diffusion model filename.
+        diffusion_model_name: Wan 2.2 I2V high-noise GGUF model filename.
+        low_noise_model_name: Wan 2.2 I2V low-noise GGUF model filename.
         vae_name: Wan VAE model filename.
         clip_vision_name: CLIP vision encoder filename.
         t5_name: T5/UMT5 text encoder filename.
@@ -1092,11 +1103,16 @@ def build_wan21_i2v_dual_stage_workflow(
         seed = random.randint(0, 2**32 - 1)
 
     workflow: dict[str, Any] = {
-        "1": {  # Load Diffusion Model (Wan I2V)
-            "class_type": "UNETLoader",
+        "1": {  # Load High-Noise Diffusion Model via GGUF loader (diffusion_models/ dir)
+            "class_type": "UnetLoaderGGUF",
             "inputs": {
                 "unet_name": diffusion_model_name,
-                "weight_dtype": "default",
+            },
+        },
+        "1b": {  # Load Low-Noise Diffusion Model via GGUF loader
+            "class_type": "UnetLoaderGGUF",
+            "inputs": {
+                "unet_name": low_noise_model_name,
             },
         },
         "2": {  # Load VAE (Wan 2.1)
@@ -1105,7 +1121,7 @@ def build_wan21_i2v_dual_stage_workflow(
                 "vae_name": vae_name,
             },
         },
-        "3": {  # Load CLIP Vision
+        "3": {  # Load CLIP Vision (for image encoding)
             "class_type": "CLIPVisionLoader",
             "inputs": {
                 "clip_name": clip_vision_name,
@@ -1118,7 +1134,7 @@ def build_wan21_i2v_dual_stage_workflow(
                 "type": "wan",
             },
         },
-        "5": {  # CLIPTextEncode
+        "5": {  # CLIPTextEncode (positive)
             "class_type": "CLIPTextEncode",
             "inputs": {
                 "text": prompt,
@@ -1131,74 +1147,95 @@ def build_wan21_i2v_dual_stage_workflow(
                 "image": image_name,
             },
         },
-        "7": {  # Wan Image To Video
+        "7": {  # CLIPVisionEncode (encode image for WanImageToVideo)
+            "class_type": "CLIPVisionEncode",
+            "inputs": {
+                "clip_vision": ["3", 0],
+                "image": ["6", 0],
+                "crop": "center",
+            },
+        },
+        "8": {  # WanImageToVideo — requires positive, negative, vae; optional start_image + clip_vision_output
             "class_type": "WanImageToVideo",
             "inputs": {
-                "image": ["6", 0],
+                "positive": ["5", 0],
+                "negative": ["5", 0],
+                "vae": ["2", 0],
                 "width": width,
                 "height": height,
                 "length": length,
+                "batch_size": 1,
+                "start_image": ["6", 0],
+                "clip_vision_output": ["7", 0],
             },
         },
-        "8": {  # ModelSamplingSD3 (shift tuning for video)
+        "9": {  # ModelSamplingSD3 (shift tuning for high-noise stage)
             "class_type": "ModelSamplingSD3",
             "inputs": {
                 "model": ["1", 0],
                 "shift": shift,
             },
         },
-        "9": {  # KSampler Advanced — High Noise (stage 1)
+        "10": {  # KSampler Advanced — High Noise (stage 1)
             "class_type": "KSamplerAdvanced",
             "inputs": {
-                "seed": seed,
+                "model": ["9", 0],
+                "add_noise": "enable",
+                "noise_seed": seed,
                 "steps": steps,
                 "cfg": cfg,
                 "sampler_name": "euler",
                 "scheduler": "simple",
-                "denoise": 1.0,
-                "model": ["8", 0],
-                "positive": ["5", 0],
-                "negative": ["5", 0],
-                "latent_image": ["7", 0],
-                "add_noise": "enable",
-                "return_with_leftover_noise": "enable",
+                "positive": ["8", 0],
+                "negative": ["8", 1],
+                "latent_image": ["8", 2],
                 "start_at_step": 0,
                 "end_at_step": int(high_noise_end),
+                "return_with_leftover_noise": "enable",
             },
         },
-        "10": {  # KSampler Advanced — Low Noise (stage 2)
+        "11": {  # ModelSamplingSD3 (shift tuning for low-noise stage)
+            "class_type": "ModelSamplingSD3",
+            "inputs": {
+                "model": ["1b", 0],
+                "shift": shift,
+            },
+        },
+        "12": {  # KSampler Advanced — Low Noise (stage 2, uses low-noise model)
             "class_type": "KSamplerAdvanced",
             "inputs": {
-                "seed": seed,
+                "model": ["11", 0],
+                "add_noise": "disable",
+                "noise_seed": seed,
                 "steps": steps,
                 "cfg": cfg,
                 "sampler_name": "euler",
                 "scheduler": "simple",
-                "denoise": 1.0,
-                "model": ["8", 0],
-                "positive": ["5", 0],
-                "negative": ["5", 0],
-                "latent_image": ["9", 0],
-                "add_noise": "disable",
-                "return_with_leftover_noise": "disable",
+                "positive": ["8", 0],
+                "negative": ["8", 1],
+                "latent_image": ["10", 0],
                 "start_at_step": int(high_noise_end),
                 "end_at_step": 10000,
+                "return_with_leftover_noise": "disable",
             },
         },
-        "11": {  # VAE Decode
+        "13": {  # VAE Decode
             "class_type": "VAEDecode",
             "inputs": {
-                "samples": ["10", 0],
+                "samples": ["12", 0],
                 "vae": ["2", 0],
             },
         },
-        "12": {  # VHS_VideoCombine (save as video, 16fps)
+        "14": {  # VHS_VideoCombine (save as video, 16fps)
             "class_type": "VHS_VideoCombine",
             "inputs": {
-                "images": ["11", 0],
+                "images": ["13", 0],
                 "frame_rate": 16,
-                "format": "video/h264-mp4",
+                "loop_count": 0,
                 "filename_prefix": filename_prefix,
+                "format": "video/h264-mp4",
+                "pingpong": False,
+                "save_output": True,
             },
         },
     }
@@ -1255,16 +1292,20 @@ def build_upscale_workflow(
 
 def build_face_restore_workflow(
     image_name: str,
-    model_name: str = "codeformer.pth",
+    model_name: str = "4x-UltraSharp.pth",
     filename_prefix: str = "face_restored",
 ) -> dict[str, Any]:
-    """Build a face restoration ComfyUI workflow for auxiliary GPU (3060 Ti).
+    """Build a face restoration / image enhancement ComfyUI workflow.
 
-    Pipeline: LoadImage -> FaceRestoreModelLoader -> FaceRestore -> SaveImage.
+    NOTE: CodeFormer mtb nodes not functional (mtb face enhance only supports
+    GFPGAN/RestoreFormer models which are not installed). Falls back to
+    ImageUpscaleWithModel for high-quality enhancement on primary (RTX 3090).
+
+    Pipeline: LoadImage → UpscaleModelLoader → ImageUpscaleWithModel → SaveImage.
 
     Args:
         image_name: Input image filename in ComfyUI input/ directory.
-        model_name: Face restoration model filename (default codeformer.pth).
+        model_name: Upscale model filename (default 4x-UltraSharp.pth).
         filename_prefix: Output filename prefix.
 
     Returns:
@@ -1277,17 +1318,17 @@ def build_face_restore_workflow(
                 "image": image_name,
             },
         },
-        "2": {  # Face Restore Model Loader
-            "class_type": "FaceRestoreModelLoader",
+        "2": {  # Load Upscale Model
+            "class_type": "UpscaleModelLoader",
             "inputs": {
                 "model_name": model_name,
             },
         },
-        "3": {  # Face Restore
-            "class_type": "FaceRestore",
+        "3": {  # Image Upscale With Model
+            "class_type": "ImageUpscaleWithModel",
             "inputs": {
+                "upscale_model": ["2", 0],
                 "image": ["1", 0],
-                "facerestore_model": ["2", 0],
             },
         },
         "4": {  # SaveImage
@@ -1295,6 +1336,107 @@ def build_face_restore_workflow(
             "inputs": {
                 "filename_prefix": filename_prefix,
                 "images": ["3", 0],
+            },
+        },
+    }
+    return workflow
+
+
+def build_image_refine_workflow(
+    image_name: str,
+    prompt: str = "",
+    negative_prompt: str = "",
+    strength: float = 0.5,
+    steps: int = 28,
+    cfg_scale: float = 3.5,
+    seed: int | None = None,
+    filename_prefix: str = "refined",
+) -> dict[str, Any]:
+    """Build an image refine (img2img) ComfyUI workflow using FLUX Dev FP8.
+
+    Uses LoadImage → VAEEncode → KSampler (img2img denoise) → VAEDecode → SaveImage.
+    FLUX uses separate UNet/CLIP/VAE loaders for better memory control.
+    """
+    import random
+    if seed is None:
+        seed = random.randint(0, 2**32 - 1)
+
+    workflow = {
+        "1": {  # LoadImage
+            "class_type": "LoadImage",
+            "inputs": {
+                "image": image_name,
+            },
+        },
+        "2": {  # VAEEncode
+            "class_type": "VAEEncode",
+            "inputs": {
+                "pixels": ["1", 0],
+                "vae": ["10", 0],
+            },
+        },
+        "3": {  # KSampler (img2img)
+            "class_type": "KSampler",
+            "inputs": {
+                "seed": seed,
+                "steps": steps,
+                "cfg": cfg_scale,
+                "sampler_name": "euler",
+                "scheduler": "simple",
+                "denoise": strength,
+                "model": ["4", 0],
+                "positive": ["6", 0],
+                "negative": ["7", 0],
+                "latent_image": ["2", 0],
+            },
+        },
+        "4": {  # UNETLoader (FLUX Dev FP8)
+            "class_type": "UNETLoader",
+            "inputs": {
+                "unet_name": "flux1-dev-fp8.safetensors",
+                "weight_dtype": "fp8_e4m3fn",
+            },
+        },
+        "6": {  # CLIPTextEncode (positive)
+            "class_type": "CLIPTextEncode",
+            "inputs": {
+                "text": prompt,
+                "clip": ["9", 0],
+            },
+        },
+        "7": {  # CLIPTextEncode (negative)
+            "class_type": "CLIPTextEncode",
+            "inputs": {
+                "text": negative_prompt or "",
+                "clip": ["9", 0],
+            },
+        },
+        "8": {  # VAEDecode
+            "class_type": "VAEDecode",
+            "inputs": {
+                "samples": ["3", 0],
+                "vae": ["10", 0],
+            },
+        },
+        "9": {  # DualCLIPLoader (FLUX text encoders)
+            "class_type": "DualCLIPLoader",
+            "inputs": {
+                "clip_name1": "clip_l.safetensors",
+                "clip_name2": "t5xxl_fp8_e4m3fn_scaled.safetensors",
+                "type": "flux",
+            },
+        },
+        "10": {  # VAELoader
+            "class_type": "VAELoader",
+            "inputs": {
+                "vae_name": "flux1-ae.safetensors",
+            },
+        },
+        "11": {  # SaveImage
+            "class_type": "SaveImage",
+            "inputs": {
+                "filename_prefix": filename_prefix,
+                "images": ["8", 0],
             },
         },
     }

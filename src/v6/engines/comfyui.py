@@ -1,12 +1,29 @@
-"""ComfyUI API client engine — talks to a local ComfyUI instance via HTTP."""
+"""ComfyUI API client engine - talks to a local ComfyUI instance via HTTP."""
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import uuid
 from typing import Any, Optional
 
 import httpx
+
+
+def _extract_comfyui_error(messages) -> str:
+    if isinstance(messages, str):
+        return messages
+    if isinstance(messages, list):
+        for msg in messages:
+            if isinstance(msg, (list, tuple)) and len(msg) >= 3:
+                if msg[0] == "execution_error":
+                    exc = msg[2]
+                    if isinstance(exc, dict):
+                        parts = [exc.get("node_type", ""), exc.get("exception_message", "unknown error")]
+                        return " | ".join(p for p in parts if p)
+                    return str(exc)
+    return json.dumps(messages, ensure_ascii=False)[:500]
 
 from src.v6.engines.base import BaseEngine, EngineCapabilities, EngineStatus
 
@@ -27,6 +44,7 @@ _ENGINE_PROFILES: dict[str, dict[str, Any]] = {
             "video_final", "video_preview",
             "image_draw", "image_refine",
             "upscale", "face_restore", "image_to_3d",
+            "image_pulid", "image_draw_ipadapter", "controlnet_depth", "wan_i2v",
         ],
         "vram_total_mb": 24576,
         "vram_available_mb": 24576,
@@ -34,7 +52,7 @@ _ENGINE_PROFILES: dict[str, dict[str, Any]] = {
     },
     "comfyui-auxiliary": {
         "name": "ComfyUI Auxiliary (RTX 3060 Ti)",
-        "supported_types": ["upscale", "face_restore", "image_refine"],
+        "supported_types": ["upscale", "face_restore", "image_refine", "image_draw"],
         "vram_total_mb": 5500,
         "vram_available_mb": 5500,
         "models": ["real-esrgan", "facefusion"],
@@ -47,6 +65,7 @@ _FALLBACK_PROFILE = {
         "video_final", "video_preview",
         "image_draw", "image_refine",
         "upscale", "face_restore", "image_to_3d",
+            "image_pulid", "controlnet_depth", "wan_i2v",
     ],
     "vram_total_mb": 24576,
     "vram_available_mb": 24576,
@@ -172,7 +191,7 @@ class ComfyUIEngine(BaseEngine):
                 return {
                     "status": "failed",
                     "progress": 0.0,
-                    "error": status_data.get("messages", "ComfyUI execution error"),
+                    "error": _extract_comfyui_error(status_data.get("messages", [])),
                 }
 
         # Check outputs → completed

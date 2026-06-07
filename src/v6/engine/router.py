@@ -13,10 +13,25 @@ from src.v6.models.task import EnginePool, GenerationTask, ModelPreference, Task
 
 logger = logging.getLogger(__name__)
 
+# ─── Dedicated engine mappings (type → engine_id) ───
+# These task types have specialized engines that should always be preferred
+# over the generic comfyui-primary fallback.
+DEDICATED_ENGINES: dict[TaskType, str] = {
+    TaskType.IMAGE_TO_3D: "hunyuan3d-local",
+    TaskType.IMAGE_TO_3D_MV: "hunyuan3d-mv-local",
+    TaskType.MUSIC: "acestep-internal",
+    TaskType.SFX: "acestep-internal",
+    TaskType.TTS: "tts-tracker",
+    TaskType.TTS_ZH: "tts-zh",
+    TaskType.TTS_EN: "tts-en",
+    TaskType.TTS_BILINGUAL: "tts-bilingual",
+}
+
 # ─── Light task types routed to auxiliary ───
+# NOTE: face_restore removed — mtb face enhance not functional on either instance.
+#   Routes to primary, uses simple upscale pipeline.
 LIGHT_TASK_TYPES: set[TaskType] = {
     TaskType.UPSCALE,
-    TaskType.FACE_RESTORE,
     TaskType.IMAGE_REFINE,
 }
 
@@ -27,12 +42,17 @@ VRAM_ESTIMATES: dict[TaskType, float] = {
     TaskType.IMAGE_DRAW: 8.0,
     TaskType.IMAGE_REFINE: 6.0,
     TaskType.TTS: 2.0,
+    TaskType.TTS_ZH: 4.0,         # GPT-SoVITS on 3060Ti
+    TaskType.TTS_EN: 2.0,         # Chatterbox on 3060Ti
+    TaskType.TTS_BILINGUAL: 6.0,  # CosyVoice on 3090
     TaskType.MUSIC: 4.0,
     TaskType.SFX: 2.0,
     TaskType.UPSCALE: 2.0,
     TaskType.FACE_RESTORE: 1.5,
     TaskType.IMAGE_TO_3D: 10.0,
+    TaskType.IMAGE_TO_3D_MV: 12.0,      # Hunyuan3D-2mv (multiview, heavier)
     TaskType.IMAGE_PULID: 16.0,          # FLUX + PuLID
+    TaskType.IMAGE_DRAW_IPADAPTER: 16.0,  # FLUX + IP-Adapter
     TaskType.CONTROLNET_DEPTH: 18.0,     # FLUX + ControlNet
     TaskType.WAN_I2V: 20.0,              # Wan 2.1 14B
 }
@@ -142,8 +162,9 @@ class EngineRouter:
 
     def _pick_local_engine_id(self, task: GenerationTask) -> str:
         """Pick the best local engine ID for the task type."""
-        if task.type == TaskType.TTS:
-            return "tts-local"
+        # Dedicated engine mappings take priority
+        if task.type in DEDICATED_ENGINES:
+            return DEDICATED_ENGINES[task.type]
         if task.type in LIGHT_TASK_TYPES and self.auxiliary_available:
             return "comfyui-auxiliary"
         return "comfyui-primary"

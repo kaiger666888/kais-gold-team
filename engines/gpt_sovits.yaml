@@ -1,33 +1,51 @@
-# GPT-SoVITS Voice Cloning Engine (Node 29)
-# Local image: kais-gpt_sovits:latest
-# GPU: RTX 3060Ti, ~4GB VRAM
+# GPT-SoVITS Chinese TTS Engine (Track 1: 中文轨)
+# 3060Ti 常驻服务 | ~4GB VRAM | Port 9880
+# API: POST /tts  GET /health
 
 name: gpt_sovits
 engine: gpt_sovits
-docker_image: kais-gpt_sovits:latest
-api_port: 8094
+docker_image: none  # runs as native service
+api_port: 9880
+api_host: "127.0.0.1"
 requires_gpu: true
-mode: api
+gpu_id: 1  # RTX 3060Ti
+mode: http
+vram_gb: 4.0
 
 task_types:
-  voice_clone:
-    submit_endpoint: /clone
+  tts_zh:
+    submit_endpoint: /tts
     health_endpoint: /health
-    poll_timeout: 300
-    poll_interval: 2.0
+    poll_timeout: 60
+    poll_interval: 1.0
     params:
       text:
         type: string
         default: ""
+        description: "中文文本"
+      reference_audio:
+        type: string
+        default: ""
+        description: "角色参考音频URL或路径"
+      reference_text:
+        type: string
+        default: ""
+        description: "参考音频对应的文本"
       language:
         type: string
         default: "zh"
+        description: "语言代码 zh/en"
       speed:
         type: float
         default: 1.0
+        description: "语速 0.5-2.0"
+      emotion:
+        type: string
+        default: ""
+        description: "情感标签 happy/sad/angry"
     assets:
       required:
         - role: reference_audio
           type: audio
-          description: "Reference audio for voice cloning"
+          description: "角色声纹参考音频 (10秒)"
       accept: [audio]
