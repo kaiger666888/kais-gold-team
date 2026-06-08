@@ -26,6 +26,11 @@ from pathlib import Path
 import numpy as np
 import torch
 
+# Fix perth watermarker (NoneType on some systems)
+import perth
+if perth.PerthImplicitWatermarker is None:
+    perth.PerthImplicitWatermarker = perth.DummyWatermarker
+
 # Add chatterbox to path
 CHATTERBOX_ROOT = os.path.expanduser("~/chatterbox")
 if CHATTERBOX_ROOT not in sys.path:
@@ -83,7 +88,7 @@ def load_model(device: str):
     from chatterbox.tts_turbo import ChatterboxTurboTTS
     # Try from_local first (skip HuggingFace download), fallback to from_pretrained
     try:
-        _model = ChatterboxTurboTTS.from_local(os.path.expanduser("~/chatterbox/models/base"), device)
+        _model = ChatterboxTurboTTS.from_local(os.path.expanduser("~/chatterbox/models/turbo"), device)
         logger.info("Loaded Chatterbox-Turbo from local models/base")
     except Exception as e:
         logger.warning("from_local failed (%s), trying from_pretrained", e)
@@ -141,6 +146,14 @@ async def tts(req: TTSRequest):
     }
     if req.audio_prompt_path:
         kwargs["audio_prompt_path"] = req.audio_prompt_path
+    else:
+        # Use default reference audio if none provided
+        default_ref = os.path.join(tempfile.gettempdir(), "female_random_podcast.wav")
+        if not os.path.exists(default_ref):
+            import urllib.request as _urllib
+            _urllib.urlretrieve("https://storage.googleapis.com/chatterbox-demo-samples/prompts/female_random_podcast.wav", default_ref)
+        if os.path.exists(default_ref):
+            kwargs["audio_prompt_path"] = default_ref
 
     wav = _model.generate(**kwargs)
     elapsed = time.time() - t0
