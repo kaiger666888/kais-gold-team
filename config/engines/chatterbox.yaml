@@ -1,0 +1,29 @@
+# Chatterbox-Turbo Engine — Track 2: 英文轨 (en_primary)
+engine:
+  name: Chatterbox-Turbo
+  track: en
+  role: en_primary
+  description: "英文主声道，高质量英文语音合成"
+
+server:
+  port: 9881
+  host: 0.0.0.0
+
+model:
+  path: ~/chatterbox
+  venv: ~/chatterbox/.venv
+
+gpu:
+  cuda_device: 1  # 3060Ti
+  vram_gb: 2.0
+  gpu_name: RTX 3060Ti
+
+env:
+  CUDA_VISIBLE_DEVICES: "1"
+
+endpoints:
+  health: /health
+  tts: /tts
+
+default_params:
+  temperature: 0.8

@@ -376,23 +376,25 @@ def build_tts_workflow(
     backend: str = "auto",
     output_path: str = "",
     task_id: str = "",
+    language: str = "auto",
+    reference_audio: str = "",
 ) -> dict[str, Any]:
-    """Build a TTS workflow dict for the TTSEngine.
+    """Build a TTS workflow dict for the TTSTracker.
 
-    Unlike ComfyUI workflows, this returns a parameter dict consumed by
-    TTSEngine.submit() which invokes scripts/tts_infer.py via subprocess.
+    Returns a parameter dict consumed by TTSTracker.submit().
 
     Args:
         text: Text to synthesize.
-        voice: Voice name — 'default', '中文女', '中文男', 'english_female',
-               'english_male', or a full edge-tts voice ID.
-        speed: Speech speed multiplier (1.0 = normal).
-        backend: 'auto' (try CosyVoice → edge-tts), 'cosyvoice', or 'edge-tts'.
-        output_path: Explicit output file path. Auto-generated if empty.
+        voice: Voice name.
+        speed: Speech speed multiplier.
+        backend: 'auto', 'gpt_sovits', 'chatterbox', 'cosyvoice'.
+        language: 'zh', 'en', 'auto', 'bilingual'.
+        output_path: Explicit output file path.
         task_id: Used for auto-generating output path.
+        reference_audio: Optional reference audio for voice cloning.
 
     Returns:
-        Dict with TTS parameters for TTSEngine.submit().
+        Dict with TTS parameters.
     """
     if not output_path:
         output_root = os.environ.get("KAIS_OUTPUT_ROOT", "/mnt/agents/output")
@@ -405,6 +407,9 @@ def build_tts_workflow(
         "speed": speed,
         "backend": backend,
         "output_path": output_path,
+        "language": language,
+        "reference_audio": reference_audio,
+        "track": backend if backend in ("zh", "en", "bilingual", "gpt_sovits", "chatterbox", "cosyvoice") else "",
     }
 
 

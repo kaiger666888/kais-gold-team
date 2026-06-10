@@ -1,0 +1,38 @@
+# CosyVoice-3.0 Engine — Track 3: 双语轨 (zh_primary + bilingual)
+engine:
+  name: CosyVoice-3.0
+  track: bilingual
+  role: zh_primary
+  description: "中文主声道 + 双语引擎，自然度优先"
+
+server:
+  port: 9882
+  host: 0.0.0.0
+
+model:
+  path: ~/CosyVoice
+  venv: ~/CosyVoice/.venv
+
+gpu:
+  cuda_device: 0  # 3090
+  vram_gb: 6.0
+  gpu_name: RTX 3090
+
+env:
+  CUDA_VISIBLE_DEVICES: "0"
+  PYTHONPATH: "~/CosyVoice:~/CosyVoice/third_party/Matcha-TTS"
+
+endpoints:
+  health: /health
+  tts: /tts
+
+modes:
+  - sft          # 预训练音色
+  - zero_shot    # 音色克隆
+  - cross_lingual  # 跨语言
+  - vc           # 声音转换
+  - instruct2    # 指令控制
+
+default_params:
+  mode: sft
+  instruct_text: "用自然的声音朗读"

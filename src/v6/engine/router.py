@@ -22,9 +22,9 @@ DEDICATED_ENGINES: dict[TaskType, str] = {
     TaskType.MUSIC: "acestep-internal",
     TaskType.SFX: "acestep-internal",
     TaskType.TTS: "tts-tracker",
-    TaskType.TTS_ZH: "tts-zh",
-    TaskType.TTS_EN: "tts-en",
-    TaskType.TTS_BILINGUAL: "tts-bilingual",
+    TaskType.TTS_ZH: "tts-tracker",
+    TaskType.TTS_EN: "tts-tracker",
+    TaskType.TTS_BILINGUAL: "tts-tracker",
 }
 
 # ─── Light task types routed to auxiliary ───
@@ -42,8 +42,8 @@ VRAM_ESTIMATES: dict[TaskType, float] = {
     TaskType.IMAGE_DRAW: 8.0,
     TaskType.IMAGE_REFINE: 6.0,
     TaskType.TTS: 2.0,
-    TaskType.TTS_ZH: 4.0,         # GPT-SoVITS on 3060Ti
-    TaskType.TTS_EN: 2.0,         # Chatterbox on 3060Ti
+    TaskType.TTS_ZH: 4.0,         # GPT-SoVITS on 3090 (CUDA=0)
+    TaskType.TTS_EN: 2.0,         # Chatterbox-Turbo on 3090 (shared GPU)
     TaskType.TTS_BILINGUAL: 6.0,  # CosyVoice on 3090
     TaskType.MUSIC: 4.0,
     TaskType.SFX: 2.0,

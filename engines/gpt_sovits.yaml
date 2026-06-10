@@ -1,6 +1,8 @@
-# GPT-SoVITS Chinese TTS Engine (Track 1: 中文轨)
-# 3060Ti 常驻服务 | ~4GB VRAM | Port 9880
+# GPT-SoVITS 角色/IP 音色克隆引擎 (兜底)
+# 3090 按需服务 | ~4GB VRAM | Port 9880
 # API: POST /tts  GET /health
+# 用途: 角色/IP音色克隆兜底（当 CosyVoice 克隆"音色像但不够像"时启用）
+# 定位: 不做主声道，仅在需要精确音色克隆时使用
 
 name: gpt_sovits
 engine: gpt_sovits
@@ -8,7 +10,7 @@ docker_image: none  # runs as native service
 api_port: 9880
 api_host: "127.0.0.1"
 requires_gpu: true
-gpu_id: 1  # RTX 3060Ti
+gpu_id: 0  # RTX 3090 (CUDA_VISIBLE_DEVICES=0)
 mode: http
 vram_gb: 4.0
 

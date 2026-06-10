@@ -125,16 +125,33 @@ class TaskExecutor:
             workflow = task.params.get("workflow")
             if not workflow or "__mock__" in workflow:
                 # Route to appropriate workflow builder based on task type
-                if task.type == TaskType.TTS:
+                if task.type in (TaskType.TTS, TaskType.TTS_ZH, TaskType.TTS_EN, TaskType.TTS_BILINGUAL):
                     from src.v6.engines.workflow_builder import build_tts_workflow
+                    # Map task type to language/track for TrackManager routing
+                    tts_lang_map = {
+                        TaskType.TTS: "auto",
+                        TaskType.TTS_ZH: "zh",
+                        TaskType.TTS_EN: "en",
+                        TaskType.TTS_BILINGUAL: "auto",
+                    }
+                    tts_track_map = {
+                        TaskType.TTS: None,
+                        TaskType.TTS_ZH: "zh",
+                        TaskType.TTS_EN: "en",
+                        TaskType.TTS_BILINGUAL: "bilingual",
+                    }
+                    lang = tts_lang_map[task.type]
+                    track = tts_track_map[task.type]
                     workflow = build_tts_workflow(
                         text=task.params.get("text", ""),
                         voice=task.params.get("voice", "default"),
                         speed=task.params.get("speed", 1.0),
-                        backend=task.params.get("backend", "auto"),
+                        backend=track or "auto",
+                        language=lang,
                         task_id=task.task_id,
+                        reference_audio=task.params.get("reference_audio", ""),
                     )
-                    logger.info("Auto-built TTS workflow for task %s", task.task_id)
+                    logger.info("Auto-built TTS workflow for task %s (lang=%s, track=%s)", task.task_id, lang, track)
                 elif task.type == TaskType.IMAGE_TO_3D:
                     from src.v6.engines.workflow_builder import build_hunyuan3d_workflow
                     input_image = task.params.get("input_image") or task.params.get("image", "")

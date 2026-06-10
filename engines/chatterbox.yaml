@@ -1,6 +1,7 @@
-# Chatterbox-Turbo English TTS Engine (Track 2: 英文轨)
+# Chatterbox-Turbo 英文主声道
 # 3060Ti 常驻服务 | ~2GB VRAM | Port 9881
 # API: POST /tts  GET /health
+# 用途: 英文主声道
 
 name: chatterbox
 engine: chatterbox
@@ -8,7 +9,7 @@ docker_image: none  # runs as native service
 api_port: 9881
 api_host: "127.0.0.1"
 requires_gpu: true
-gpu_id: 1  # RTX 3060Ti (shares with gpt_sovits)
+gpu_id: 1  # RTX 3060Ti (CUDA_VISIBLE_DEVICES=1)
 mode: http
 vram_gb: 2.0
 

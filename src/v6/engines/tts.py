@@ -1,382 +1,586 @@
-"""Three-Track TTS Engine System for kais-gold-team V6.
+"""Three-Track TTS Engine for kais-gold-team V6 — in-process, no HTTP layer.
 
-Architecture:
-    Track 1 (中文轨): GPT-SoVITS — Chinese TTS, 3060Ti, :9880
-    Track 2 (英文轨): Chatterbox-Turbo — English TTS, 3060Ti, :9881
-    Track 3 (双语轨): CosyVoice 3.0 — Bilingual TTS, 3090, :9882
+Architecture (方案C — TrackManager embedded in TTSTracker):
+    Track 1 (中文轨): GPT-SoVITS — Chinese TTS (voice_clone), ~4 GB VRAM
+    Track 2 (英文轨): Chatterbox-Turbo — English TTS, ~2 GB VRAM
+    Track 3 (双语轨): CosyVoice 300M — Bilingual TTS, ~2.5 GB VRAM
 
-All three engines expose a common HTTP API:
-    POST /tts  { text, ...params }  →  { audio_url, duration_sec }
-    GET  /health                    →  { status, vram_used_mb }
-
-The TTSTracker acts as a unified facade that auto-routes by language.
+All three tracks share the gold-team 3090 GPU with lazy-load + idle-unload.
+No HTTP intermediate — TrackManager runs in-process inside TTSTracker.
 
 Lifecycle:
-    Each TTS service runs independently as a FastAPI server.
-    The engine communicates via HTTP — no subprocess spawning.
-    If a service is down, the tracker returns a clear error with
-    suggested fallback track.
+    - TTSTracker.start() creates TrackManager + idle reaper
+    - submit() calls TrackManager.synthesize() synchronously → returns job_id immediately
+    - Results cached in _results dict for poll()/get_output()
+    - Tracks loaded on first request, unloaded after idle_timeout
 """
 from __future__ import annotations
 
+# ── Disable numba JIT BEFORE any import that touches librosa ──────────────
+import numba  # noqa: E402 — must be before librosa
+numba.config.DISABLE_JIT = True
+
 import asyncio
+import gc
 import logging
+import os
+import re
+import sys
 import time
 import uuid
-from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
-import aiohttp
+import numpy as np
+import torch
 
 from src.v6.engines.base import BaseEngine, EngineCapabilities, EngineStatus
 
 logger = logging.getLogger(__name__)
 
-OUTPUT_ROOT = "/mnt/agents/output"
+OUTPUT_ROOT = os.environ.get("OUTPUT_ROOT", "/mnt/agents/output")
+
+# ── Model paths ─────────────────────────────────────────────────────────────
+COSYVOICE_ROOT = os.environ.get("COSYVOICE_ROOT", "/opt/CosyVoice")
+GPTSOVITS_ROOT = os.environ.get("GPTSOVITS_ROOT", "/opt/GPT-SoVITS")
+CHATTERBOX_ROOT = os.environ.get("CHATTERBOX_ROOT", "/opt/chatterbox")
+
+# ── Language detection ─────────────────────────────────────────────────────
+_CJK_RE = re.compile(r"[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]")
+_LATIN_RE = re.compile(r"[a-zA-Z]")
 
 
-# ─── TTS Track Definition ───
+# ─── TTS Track Definition ──────────────────────────────────────────────────
 
 class TTSTrack(str, Enum):
-    ZH = "zh"          # GPT-SoVITS
-    EN = "en"          # Chatterbox-Turbo
+    ZH = "zh"                # GPT-SoVITS
+    EN = "en"                # Chatterbox-Turbo
     BILINGUAL = "bilingual"  # CosyVoice
 
-
-@dataclass
-class TTSServiceConfig:
-    """Configuration for a single TTS HTTP service."""
-    name: str
-    track: TTSTrack
-    host: str = "127.0.0.1"
-    port: int = 9880
-    health_endpoint: str = "/health"
-    tts_endpoint: str = "/tts"
-    timeout_sec: float = 120.0
-    vram_gb: float = 4.0
-    gpu_id: int = 0
-
-    @property
-    def base_url(self) -> str:
-        return f"http://{self.host}:{self.port}"
-
-    @property
-    def tts_url(self) -> str:
-        return f"{self.base_url}{self.tts_endpoint}"
-
-    @property
-    def health_url(self) -> str:
-        return f"{self.base_url}{self.health_endpoint}"
-
-
-# Default service configs (matches engine YAML)
-DEFAULT_SERVICES: dict[TTSTrack, TTSServiceConfig] = {
-    TTSTrack.ZH: TTSServiceConfig(
-        name="GPT-SoVITS",
-        track=TTSTrack.ZH,
-        port=9880,
-        vram_gb=4.0,
-        gpu_id=1,  # 3060Ti
-        timeout_sec=60.0,
-    ),
-    TTSTrack.EN: TTSServiceConfig(
-        name="Chatterbox-Turbo",
-        track=TTSTrack.EN,
-        port=9881,
-        vram_gb=2.0,
-        gpu_id=1,  # 3060Ti
-        timeout_sec=60.0,
-    ),
-    TTSTrack.BILINGUAL: TTSServiceConfig(
-        name="CosyVoice-3.0",
-        track=TTSTrack.BILINGUAL,
-        port=9882,
-        vram_gb=6.0,
-        gpu_id=0,  # 3090
-        timeout_sec=120.0,
-    ),
-}
-
-
-# ─── Language Detection ───
 
 def detect_language(text: str) -> str:
     """Simple CJK-based language detection.
 
-    Returns: 'zh' if >30% CJK characters, 'en' otherwise.
-    This is intentionally simple — the pipeline caller can override.
+    Returns 'zh', 'en', or 'auto' (mixed).
     """
-    cjk_count = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
-    if len(text) > 0 and cjk_count / len(text) > 0.3:
+    has_cjk = bool(_CJK_RE.search(text))
+    has_latin = bool(_LATIN_RE.search(text))
+    if has_cjk and not has_latin:
         return "zh"
-    return "en"
+    if has_latin and not has_cjk:
+        return "en"
+    return "auto"
 
 
-# ─── HTTP TTS Job ───
+# ═══════════════════════════════════════════════════════════════════════════
+# Track wrappers — lazy-load, auto-unload
+# ═══════════════════════════════════════════════════════════════════════════
 
-@dataclass
-class TTSJob:
-    """Tracks a single TTS HTTP request."""
-    job_id: str
-    track: TTSTrack
-    params: dict[str, Any]
-    status: str = "queued"  # queued | running | completed | failed
-    progress: float = 0.0
-    output_path: str = ""
-    error: str = ""
-    duration_sec: float = 0.0
-    service_name: str = ""
-    submitted_at: float = 0.0
+class BaseTrack:
+    """Base class for a TTS track — manages model lifecycle."""
 
+    name: str = "base"
+    language: str = "auto"
+    vram_mb: int = 0
 
-# ─── Individual Track Engine ───
-
-class HTTPTTSEngine(BaseEngine):
-    """HTTP-based TTS engine for a single track.
-
-    Talks to the TTS service via HTTP POST /tts.
-    Handles health checks, timeout, and error reporting.
-    """
-
-    def __init__(self, config: TTSServiceConfig, output_root: str = OUTPUT_ROOT) -> None:
-        self._config = config
-        self._output_root = output_root
-        self._jobs: dict[str, TTSJob] = {}
-        self._session: Optional[aiohttp.ClientSession] = None
-        self._healthy: bool | None = None  # None=unchecked
-        self._last_health_check: float = 0.0
+    def __init__(self, idle_timeout: float = 300.0):
+        self._model = None
+        self._loaded = False
+        self._loading = False
+        self._last_used: float = 0.0
+        self._idle_timeout = idle_timeout
+        self._lock = asyncio.Lock()
 
     @property
-    def name(self) -> str:
-        return f"TTS-{self._config.track.value} ({self._config.name})"
+    def is_loaded(self) -> bool:
+        return self._loaded
 
     @property
-    def engine_id(self) -> str:
-        return f"tts-{self._config.track.value}"
+    def last_used(self) -> float:
+        return self._last_used
 
-    @property
-    def capabilities(self) -> EngineCapabilities:
-        return EngineCapabilities(
-            supported_types=[f"tts_{self._config.track.value}"],
-            max_duration_sec=self._config.timeout_sec,
-            vram_total_mb=int(self._config.vram_gb * 1024),
-            vram_available_mb=int(self._config.vram_gb * 1024),
-            models=[self._config.name],
-        )
+    async def ensure_loaded(self) -> None:
+        """Load model if not already loaded (with dedup lock)."""
+        async with self._lock:
+            if self._loaded:
+                self._last_used = time.monotonic()
+                return
+            if self._loading:
+                while self._loading:
+                    await asyncio.sleep(0.5)
+                return
+            self._loading = True
+            try:
+                await asyncio.get_event_loop().run_in_executor(None, self._load_model)
+                self._loaded = True
+                self._last_used = time.monotonic()
+                logger.info("Track '%s' loaded successfully", self.name)
+            except Exception as e:
+                logger.error("Track '%s' failed to load: %s", self.name, e)
+                raise
+            finally:
+                self._loading = False
 
-    @property
-    def track(self) -> TTSTrack:
-        return self._config.track
+    def _load_model(self) -> None:
+        """Override in subclass — loads model to GPU."""
+        raise NotImplementedError
 
-    async def _get_session(self) -> aiohttp.ClientSession:
-        if self._session is None or self._session.closed:
-            timeout = aiohttp.ClientTimeout(total=self._config.timeout_sec)
-            self._session = aiohttp.ClientSession(timeout=timeout)
-        return self._session
+    async def synthesize(self, text: str, voice: str = "default",
+                         speed: float = 1.0, reference_audio: str = "",
+                         output_path: str = "") -> dict:
+        """Synthesize speech. Must be called after ensure_loaded."""
+        raise NotImplementedError
 
-    async def start(self) -> None:
-        logger.info(
-            "TTS engine %s initialized: %s (port %d, GPU %d, ~%.0fGB)",
-            self._config.track.value, self._config.name,
-            self._config.port, self._config.gpu_id, self._config.vram_gb,
-        )
-        # Initial health check (non-blocking)
-        try:
-            await self.health()
-        except Exception as e:
-            logger.warning("TTS engine %s initial health check failed: %s", self._config.track.value, e)
+    async def unload(self) -> None:
+        """Unload model, free VRAM."""
+        async with self._lock:
+            if not self._loaded:
+                return
+            await asyncio.get_event_loop().run_in_executor(None, self._unload_model)
 
-    async def stop(self) -> None:
-        if self._session and not self._session.closed:
-            await self._session.close()
-            self._session = None
-        self._jobs.clear()
+    def _unload_model(self) -> None:
+        """Override in subclass — frees GPU memory."""
+        self._model = None
+        self._loaded = False
+        torch.cuda.empty_cache()
+        gc.collect()
+        logger.info("Track '%s' unloaded, VRAM freed", self.name)
 
-    async def submit(self, workflow: dict[str, Any], params: dict[str, Any] | None = None) -> str:
-        """Submit TTS via HTTP POST to the service."""
-        job_id = str(uuid.uuid4())[:12]
-        params = params or {}
-        task_id = params.get("task_id", job_id)
+    def is_idle(self) -> bool:
+        return self._loaded and (time.monotonic() - self._last_used > self._idle_timeout)
 
-        # Extract output path
-        output_path = workflow.get("output_path", "")
-        if not output_path:
-            output_path = f"{self._output_root}/{task_id}/voice.wav"
-
-        job = TTSJob(
-            job_id=job_id,
-            track=self._config.track,
-            params=workflow,
-            service_name=self._config.name,
-            submitted_at=time.monotonic(),
-        )
-        self._jobs[job_id] = job
-
-        # Build request payload
-        payload = {k: v for k, v in workflow.items() if k != "output_path"}
-        payload["output_path"] = output_path
-
-        logger.info(
-            "TTS-%s job %s: submitting to %s (text=%s)",
-            self._config.track.value, job_id, self._config.tts_url,
-            str(workflow.get("text", ""))[:60],
-        )
-
-        try:
-            job.status = "running"
-            session = await self._get_session()
-
-            async with session.post(self._config.tts_url, json=payload) as resp:
-                elapsed = time.monotonic() - job.submitted_at
-
-                if resp.status == 200:
-                    result = await resp.json()
-                    job.status = "completed"
-                    job.progress = 100.0
-                    job.output_path = result.get("audio_path", output_path)
-                    job.duration_sec = result.get("duration_sec", round(elapsed, 2))
-                    job.error = ""
-                    logger.info(
-                        "TTS-%s job %s completed in %.1fs (duration=%.1fs, output=%s)",
-                        self._config.track.value, job_id, elapsed,
-                        job.duration_sec, job.output_path,
-                    )
-                else:
-                    error_text = await resp.text()
-                    job.status = "failed"
-                    job.error = f"HTTP {resp.status}: {error_text[:300]}"
-                    logger.error(
-                        "TTS-%s job %s failed: HTTP %d — %s",
-                        self._config.track.value, job_id, resp.status, error_text[:200],
-                    )
-
-        except asyncio.TimeoutError:
-            job.status = "failed"
-            job.error = f"Timeout after {self._config.timeout_sec}s"
-            logger.error("TTS-%s job %s timed out", self._config.track.value, job_id)
-
-        except aiohttp.ClientError as e:
-            job.status = "failed"
-            job.error = f"Connection error: {e}"
-            logger.error("TTS-%s job %s connection error: %s", self._config.track.value, job_id, e)
-
-        except Exception as e:
-            job.status = "failed"
-            job.error = str(e)
-            logger.error("TTS-%s job %s unexpected error: %s", self._config.track.value, job_id, e)
-
-        return job_id
-
-    async def poll(self, engine_job_id: str) -> dict[str, Any]:
-        job = self._jobs.get(engine_job_id)
-        if not job:
-            return {"status": "failed", "progress": 0.0, "error": "Unknown job ID"}
-        result: dict[str, Any] = {"status": job.status, "progress": job.progress}
-        if job.status == "failed":
-            result["error"] = job.error
-        return result
-
-    async def get_output(self, engine_job_id: str) -> dict[str, Any]:
-        job = self._jobs.get(engine_job_id)
-        if not job or job.status != "completed":
-            return {"outputs": []}
-
-        artifacts = [{
-            "url": f"file://{job.output_path}",
-            "path": job.output_path,
-            "type": "audio",
-            "format": "wav",
-            "track": job.track.value,
-            "service": job.service_name,
-            "duration_sec": job.duration_sec,
-        }]
-        return {"outputs": artifacts}
-
-    async def cancel(self, engine_job_id: str) -> bool:
-        # HTTP TTS is synchronous — cancel only works for queued jobs
-        job = self._jobs.get(engine_job_id)
-        if not job or job.status != "queued":
-            return False
-        job.status = "failed"
-        job.error = "Cancelled"
-        return True
-
-    async def health(self) -> dict[str, Any]:
-        now = time.monotonic()
-        # Cache health check for 30s
-        if self._healthy is not None and (now - self._last_health_check) < 30.0:
-            status = EngineStatus.ONLINE if self._healthy else EngineStatus.OFFLINE
-            return {
-                "status": status.value,
-                "available": self._healthy,
-                "track": self._config.track.value,
-                "service": self._config.name,
-                "port": self._config.port,
-                "cached": True,
-            }
-
-        try:
-            session = await self._get_session()
-            async with session.get(self._config.health_url, timeout=aiohttp.ClientTimeout(total=5.0)) as resp:
-                if resp.status == 200:
-                    body = await resp.json()
-                    self._healthy = True
-                    self._last_health_check = now
-                    return {
-                        "status": EngineStatus.ONLINE.value,
-                        "available": True,
-                        "track": self._config.track.value,
-                        "service": self._config.name,
-                        "port": self._config.port,
-                        "vram_used_mb": body.get("vram_used_mb", 0),
-                        "model_loaded": body.get("model_loaded", True),
-                    }
-        except Exception as e:
-            logger.debug("TTS-%s health check failed: %s", self._config.track.value, e)
-
-        self._healthy = False
-        self._last_health_check = now
+    def status(self) -> dict:
         return {
-            "status": EngineStatus.OFFLINE.value,
-            "available": False,
-            "track": self._config.track.value,
-            "service": self._config.name,
-            "port": self._config.port,
-            "error": "Service not reachable",
+            "name": self.name,
+            "language": self.language,
+            "loaded": self._loaded,
+            "loading": self._loading,
+            "vram_mb": self.vram_mb,
+            "last_used": self._last_used,
+            "idle_seconds": time.monotonic() - self._last_used if self._loaded else None,
         }
 
 
-# ─── Unified TTS Tracker ───
+class CosyVoiceTrack(BaseTrack):
+    """Track 3: CosyVoice-300M — Chinese + English + mixed."""
+
+    name = "cosyvoice"
+    language = "auto"
+    vram_mb = 2500
+
+    def _load_model(self) -> None:
+        sys.path.insert(0, COSYVOICE_ROOT)
+        sys.path.insert(0, os.path.join(COSYVOICE_ROOT, "third_party", "Matcha-TTS"))
+        from cosyvoice.cli.cosyvoice import AutoModel
+
+        model_dir = os.path.join(COSYVOICE_ROOT, "pretrained_models", "CosyVoice-300M")
+        self._model = AutoModel(model_dir=model_dir)
+        logger.info("CosyVoice-300M loaded")
+
+    def _unload_model(self) -> None:
+        if self._model is not None:
+            del self._model
+            self._model = None
+        self._loaded = False
+        torch.cuda.empty_cache()
+        gc.collect()
+        logger.info("CosyVoice track unloaded")
+
+    async def synthesize(self, text: str, voice: str = "default",
+                         speed: float = 1.0, reference_audio: str = "",
+                         output_path: str = "") -> dict:
+        await self.ensure_loaded()
+        loop = asyncio.get_event_loop()
+
+        def _synth():
+            nonlocal output_path
+            try:
+                if reference_audio and os.path.isfile(reference_audio):
+                    result = self._model.inference_zero_shot(
+                        text, "", reference_audio, stream=False, speed=speed,
+                    )
+                else:
+                    import soundfile as sf
+                    # No preset speakers → use cross_lingual with dummy ref
+                    dummy_sr = 22050
+                    t = np.arange(0, 10.0, 1.0 / dummy_sr)
+                    dummy_wav = np.sin(2 * np.pi * 440 * t).astype(np.float32) * 0.3
+                    dummy_path = os.path.join(OUTPUT_ROOT, "_cosyvoice_ref.wav")
+                    os.makedirs(os.path.dirname(dummy_path), exist_ok=True)
+                    sf.write(dummy_path, dummy_wav, dummy_sr)
+                    result = self._model.inference_cross_lingual(
+                        text, dummy_path, stream=False, speed=speed,
+                    )
+                import soundfile as sf
+                all_audio = []
+                sr = self._model.sample_rate
+                for model_output in result:
+                    tts_speech = model_output['tts_speech']
+                    if hasattr(tts_speech, 'cpu'):
+                        tts_speech = tts_speech.cpu().numpy()
+                    if tts_speech.ndim == 3:
+                        tts_speech = tts_speech.squeeze(0)
+                    if tts_speech.ndim == 1:
+                        tts_speech = tts_speech.unsqueeze(0)
+                    all_audio.append(tts_speech)
+                if not all_audio:
+                    return {"error": "No audio generated"}
+                audio_np = np.concatenate(all_audio, axis=1).squeeze(0) if len(all_audio) > 1 else all_audio[0].squeeze(0)
+                if not output_path:
+                    output_path = os.path.join(OUTPUT_ROOT, f"tts_{int(time.time())}.wav")
+                os.makedirs(os.path.dirname(output_path), exist_ok=True)
+                sf.write(output_path, audio_np, sr)
+                duration = len(audio_np) / sr
+                return {
+                    "output_path": output_path,
+                    "duration_sec": round(duration, 2),
+                    "sample_rate": sr,
+                    "backend": "cosyvoice",
+                }
+            except Exception as e:
+                logger.error("CosyVoice synthesis error: %s", e)
+                raise
+
+        return await loop.run_in_executor(None, _synth)
+
+
+class GPTSoVITSTrack(BaseTrack):
+    """Track 1: GPT-SoVITS — Chinese voice cloning.
+
+    Uses GPT-SoVITS api_v2.py as a subprocess (avoids massive import-time side effects).
+    """
+
+    name = "gpt_sovits"
+    language = "zh"
+    vram_mb = 4000
+    _api_port: int = 9988
+    _process: Optional[asyncio.subprocess.Process] = None
+
+    def _load_model(self) -> None:
+        """Start GPT-SoVITS api_v2.py as subprocess."""
+        import subprocess
+        script = os.path.join(GPTSOVITS_ROOT, "api_v2.py")
+        config = os.path.join(GPTSOVITS_ROOT, "GPT_SoVITS", "configs", "tts_infer.yaml")
+
+        python_bin = os.path.join(GPTSOVITS_ROOT, ".venv", "bin", "python")
+        if not os.path.isfile(python_bin):
+            python_bin = "python3"
+
+        self._process = subprocess.Popen(
+            [python_bin, script, "-a", "127.0.0.1", "-p", str(self._api_port), "-c", config],
+            cwd=GPTSOVITS_ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env={**os.environ, "NUMBA_DISABLE_JIT": "1"},
+        )
+        import urllib.request
+        import urllib.error
+        for i in range(240):
+            try:
+                urllib.request.urlopen(f"http://127.0.0.1:{self._api_port}/", timeout=1)
+                logger.info("GPT-SoVITS api_v2 started on port %d", self._api_port)
+                return
+            except (urllib.error.URLError, ConnectionRefusedError, OSError):
+                time.sleep(0.5)
+                if self._process.poll() is not None:
+                    stderr = self._process.stderr.read().decode(errors='replace')
+                    raise RuntimeError(f"GPT-SoVITS api_v2 crashed: {stderr[-500:]}")
+        raise RuntimeError("GPT-SoVITS api_v2 failed to start within 120s")
+
+    def _unload_model(self) -> None:
+        if self._process and self._process.poll() is None:
+            self._process.terminate()
+            try:
+                self._process.wait(timeout=10)
+            except Exception:
+                self._process.kill()
+            logger.info("GPT-SoVITS api_v2 process stopped")
+        self._process = None
+        self._loaded = False
+        torch.cuda.empty_cache()
+        gc.collect()
+        logger.info("GPT-SoVITS track unloaded")
+
+    async def synthesize(self, text: str, voice: str = "default",
+                         speed: float = 1.0, reference_audio: str = "",
+                         output_path: str = "") -> dict:
+        await self.ensure_loaded()
+        loop = asyncio.get_event_loop()
+
+        def _synth():
+            nonlocal output_path
+            import urllib.request
+            import json as _json
+            import soundfile as sf
+
+            ref_path = reference_audio
+            if not ref_path or not os.path.isfile(ref_path):
+                dummy_sr = 32000
+                t = np.arange(0, 3.0, 1.0 / dummy_sr)
+                dummy_wav = np.sin(2 * np.pi * 440 * t).astype(np.float32) * 0.3
+                ref_path = os.path.join(OUTPUT_ROOT, "_gpt_sovits_ref.wav")
+                sf.write(ref_path, dummy_wav, dummy_sr)
+
+            payload = _json.dumps({
+                "text": text,
+                "text_lang": "zh",
+                "ref_audio_path": ref_path,
+                "prompt_text": "",
+                "prompt_lang": "zh",
+                "top_k": 15,
+                "top_p": 1.0,
+                "temperature": 1.0,
+                "speed_factor": speed,
+                "media_type": "wav",
+            }).encode()
+
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{self._api_port}/tts",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            resp = urllib.request.urlopen(req, timeout=120)
+            audio_bytes = resp.read()
+
+            if not output_path:
+                output_path = os.path.join(OUTPUT_ROOT, f"tts_{int(time.time())}.wav")
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            with open(output_path, "wb") as f:
+                f.write(audio_bytes)
+
+            data, sr = sf.read(output_path)
+            duration = len(data) / sr
+            return {
+                "output_path": output_path,
+                "duration_sec": round(duration, 2),
+                "sample_rate": sr,
+                "backend": "gpt_sovits",
+            }
+
+        return await loop.run_in_executor(None, _synth)
+
+
+class ChatterboxTrack(BaseTrack):
+    """Track 2: Chatterbox-Turbo — English TTS (in-process on CUDA)."""
+
+    name = "chatterbox"
+    language = "en"
+    vram_mb = 2000
+
+    def _load_model(self) -> None:
+        """Verify chatterbox is importable."""
+        chatterbox_src = os.path.join(CHATTERBOX_ROOT, "src")
+        if os.path.isdir(chatterbox_src):
+            sys.path.insert(0, CHATTERBOX_ROOT)
+            sys.path.insert(0, chatterbox_src)
+        try:
+            from chatterbox.tts_turbo import ChatterboxTurboTTS
+            logger.info("Chatterbox-Turbo importable")
+        except ImportError as e:
+            logger.warning("Chatterbox import failed: %s (track will fallback)", e)
+
+    def _unload_model(self) -> None:
+        self._model = None
+        self._loaded = False
+        torch.cuda.empty_cache()
+        gc.collect()
+        logger.info("Chatterbox track unloaded")
+
+    async def synthesize(self, text: str, voice: str = "default",
+                         speed: float = 1.0, reference_audio: str = "",
+                         output_path: str = "") -> dict:
+        await self.ensure_loaded()
+        loop = asyncio.get_event_loop()
+
+        def _synth():
+            nonlocal output_path
+            from chatterbox.tts_turbo import ChatterboxTurboTTS
+
+            # 优先从本地 CHATTERBOX_ROOT/models/turbo 加载，避免HF下载
+            local_path = None
+            ch_root = os.environ.get("CHATTERBOX_ROOT", "")
+            if ch_root:
+                turbo_dir = os.path.join(ch_root, "models", "turbo")
+                if os.path.isdir(turbo_dir) and os.path.exists(os.path.join(turbo_dir, "t3_turbo_v1.safetensors")):
+                    local_path = turbo_dir
+                    logger.info(f"Chatterbox Turbo loading from local: {turbo_dir}")
+
+            if not local_path:
+                cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
+                repo_cache = os.path.join(cache_dir, "models--ResembleAI--chatterbox-turbo")
+                snapshots_dir = os.path.join(repo_cache, "snapshots")
+                if os.path.isdir(snapshots_dir):
+                    for snap in os.listdir(snapshots_dir):
+                        snap_dir = os.path.join(snapshots_dir, snap)
+                        if os.path.isdir(snap_dir) and os.path.exists(os.path.join(snap_dir, "t3_turbo_v1.safetensors")):
+                            local_path = snap_dir
+                            break
+
+            if local_path:
+                model = ChatterboxTurboTTS.from_local(local_path, "cuda")
+            else:
+                logger.warning("Chatterbox: no local model found, downloading from HF (may be slow)")
+                model = ChatterboxTurboTTS.from_pretrained("cuda")
+
+            if reference_audio and os.path.isfile(reference_audio):
+                model.prepare_conditionals(reference_audio)
+
+            wav_tensor = model.generate(
+                text=text,
+                temperature=0.8,
+                top_k=1000,
+                top_p=0.95,
+            )
+
+            audio_np = wav_tensor.squeeze(0).numpy()
+            sr = model.sr
+
+            if not output_path:
+                output_path = os.path.join(OUTPUT_ROOT, f"tts_{int(time.time())}.wav")
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+            import soundfile as sf
+            sf.write(output_path, audio_np, sr)
+            duration = len(audio_np) / sr
+
+            # Free model immediately (no caching between requests)
+            del model
+            torch.cuda.empty_cache()
+
+            return {
+                "output_path": output_path,
+                "duration_sec": round(duration, 2),
+                "sample_rate": sr,
+                "backend": "chatterbox",
+            }
+
+        return await loop.run_in_executor(None, _synth)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Track Manager — orchestrates all three tracks
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TrackManager:
+    """Manages three TTS tracks with lazy loading and idle auto-unload."""
+
+    def __init__(self, idle_timeout: float = 300.0):
+        self._tracks: Dict[str, BaseTrack] = {
+            "gpt_sovits": GPTSoVITSTrack(idle_timeout),
+            "chatterbox": ChatterboxTrack(idle_timeout),
+            "cosyvoice": CosyVoiceTrack(idle_timeout),
+        }
+        self._idle_timeout = idle_timeout
+        self._reaper_task: Optional[asyncio.Task] = None
+
+    async def start(self) -> None:
+        """Start the idle reaper background task."""
+        self._reaper_task = asyncio.create_task(self._idle_reaper())
+        logger.info("TrackManager started (idle_timeout=%.0fs)", self._idle_timeout)
+
+    async def stop(self) -> None:
+        """Unload all tracks and stop reaper."""
+        if self._reaper_task:
+            self._reaper_task.cancel()
+            try:
+                await self._reaper_task
+            except asyncio.CancelledError:
+                pass
+        for track in self._tracks.values():
+            await track.unload()
+        logger.info("TrackManager stopped, all tracks unloaded")
+
+    def select_track(self, text: str, backend: str = "auto",
+                     language: str = "auto") -> str:
+        """Select the best track for the given text."""
+        if backend != "auto" and backend in self._tracks:
+            return backend
+
+        if language == "auto":
+            language = detect_language(text)
+
+        lang_map = {"zh": "gpt_sovits", "en": "chatterbox", "auto": "cosyvoice"}
+        return lang_map.get(language, "cosyvoice")
+
+    async def synthesize(self, text: str, voice: str = "default",
+                         speed: float = 1.0, backend: str = "auto",
+                         language: str = "auto", reference_audio: str = "",
+                         output_path: str = "") -> dict:
+        """Route to the correct track and synthesize."""
+        track_id = self.select_track(text, backend, language)
+        track = self._tracks[track_id]
+
+        try:
+            result = await track.synthesize(
+                text=text, voice=voice, speed=speed,
+                reference_audio=reference_audio, output_path=output_path,
+            )
+            result["track"] = track_id
+            return result
+        except Exception as e:
+            # Fallback to cosyvoice if primary fails
+            if track_id != "cosyvoice":
+                logger.warning("Track '%s' failed (%s), falling back to cosyvoice", track_id, e)
+                try:
+                    result = await self._tracks["cosyvoice"].synthesize(
+                        text=text, voice=voice, speed=speed,
+                        reference_audio=reference_audio, output_path=output_path,
+                    )
+                    result["track"] = "cosyvoice"
+                    result["fallback_from"] = track_id
+                    return result
+                except Exception as e2:
+                    return {"error": f"All tracks failed: {e}, cosyvoice: {e2}"}
+            return {"error": str(e)}
+
+    def get_status(self) -> dict:
+        return {
+            "idle_timeout": self._idle_timeout,
+            "tracks": {tid: t.status() for tid, t in self._tracks.items()},
+            "total_vram_mb": sum(t.vram_mb for t in self._tracks.values() if t.is_loaded),
+            "available_vram_mb": sum(t.vram_mb for t in self._tracks.values()),
+        }
+
+    async def _idle_reaper(self) -> None:
+        """Background task: unload idle tracks."""
+        while True:
+            try:
+                await asyncio.sleep(30)
+                for tid, track in self._tracks.items():
+                    if track.is_idle():
+                        logger.info("Track '%s' idle > %.0fs, unloading", tid, self._idle_timeout)
+                        await track.unload()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error("Idle reaper error: %s", e)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TTSTracker — unified facade implementing BaseEngine
+# ═══════════════════════════════════════════════════════════════════════════
 
 class TTSTracker(BaseEngine):
-    """Unified TTS facade that auto-routes to the correct track engine.
+    """Unified TTS facade — in-process TrackManager, no HTTP layer.
 
     Routing logic:
     - Explicit track specified → use that engine
     - language='zh' → Track 1 (GPT-SoVITS)
     - language='en' → Track 2 (Chatterbox-Turbo)
-    - language='auto' or mixed → detect, route accordingly
-    - Fallback: if target engine is offline, suggest alternatives
+    - language='auto' or mixed → CosyVoice (bilingual)
+    - Fallback: if target track fails, degrade to CosyVoice
     """
 
-    def __init__(
-        self,
-        services: dict[TTSTrack, TTSServiceConfig] | None = None,
-        output_root: str = OUTPUT_ROOT,
-    ) -> None:
+    def __init__(self, idle_timeout: float = 300.0,
+                 output_root: str = OUTPUT_ROOT) -> None:
         self._output_root = output_root
-        self._services = services or DEFAULT_SERVICES
-        self._engines: dict[TTSTrack, HTTPTTSEngine] = {}
-        self._build_engines()
-
-    def _build_engines(self) -> None:
-        for track, config in self._services.items():
-            self._engines[track] = HTTPTTSEngine(config, self._output_root)
+        self._idle_timeout = idle_timeout
+        self._manager = TrackManager(idle_timeout=idle_timeout)
+        self._results: dict[str, dict] = {}
 
     @property
     def name(self) -> str:
-        return "TTS Tracker (三轨调度)"
+        return "TTS Tracker (三轨调度 in-process)"
 
     @property
     def engine_id(self) -> str:
@@ -384,139 +588,153 @@ class TTSTracker(BaseEngine):
 
     @property
     def capabilities(self) -> EngineCapabilities:
-        all_models = []
-        total_vram = 0
-        for track, engine in self._engines.items():
-            all_models.extend(engine.capabilities.models)
-            total_vram += engine.capabilities.vram_total_mb
         return EngineCapabilities(
             supported_types=["tts", "tts_zh", "tts_en", "tts_bilingual"],
             max_duration_sec=120.0,
-            vram_total_mb=total_vram,
-            vram_available_mb=total_vram,
-            models=all_models,
+            vram_total_mb=8500,  # 4G + 2G + 2.5G
+            vram_available_mb=8500,
+            models=["GPT-SoVITS", "Chatterbox-Turbo", "CosyVoice-300M"],
         )
 
     @property
-    def engines(self) -> dict[TTSTrack, HTTPTTSEngine]:
-        return self._engines
+    def manager(self) -> TrackManager:
+        return self._manager
 
     async def start(self) -> None:
-        for track, engine in self._engines.items():
-            try:
-                await engine.start()
-            except Exception as e:
-                logger.warning("TTS engine %s failed to start: %s", track.value, e)
-        logger.info("TTS Tracker started with %d tracks", len(self._engines))
+        await self._manager.start()
+        logger.info("TTS Tracker started (in-process, %d tracks, idle=%.0fs)",
+                     len(self._manager._tracks), self._idle_timeout)
 
     async def stop(self) -> None:
-        for engine in self._engines.values():
-            await engine.stop()
+        await self._manager.stop()
+        self._results.clear()
 
-    def _pick_track(self, workflow: dict[str, Any]) -> TTSTrack:
-        """Determine which track to use based on workflow params."""
-        # 1. Explicit track override
+    def _pick_track_params(self, workflow: dict[str, Any]) -> tuple[str, str]:
+        """Extract backend and language from workflow for TrackManager routing.
+
+        Returns (backend, language) strings.
+        """
         explicit = workflow.get("track", "")
-        if explicit in TTSTrack.__members__.values():
-            return TTSTrack(explicit)
+        backend_map = {
+            "zh": "gpt_sovits",
+            "en": "chatterbox",
+            "bilingual": "cosyvoice",
+        }
+        if explicit in backend_map:
+            return backend_map[explicit], workflow.get("language", "auto")
 
-        # 2. Language-based routing
         language = workflow.get("language", "auto").lower()
-        if language == "zh":
-            return TTSTrack.ZH
-        if language == "en":
-            return TTSTrack.EN
-        if language == "bilingual":
-            return TTSTrack.BILINGUAL
-
-        # 3. Auto-detect from text
-        text = workflow.get("text", "")
-        detected = detect_language(text)
-        return TTSTrack.ZH if detected == "zh" else TTSTrack.EN
+        return "auto", language
 
     async def submit(self, workflow: dict[str, Any], params: dict[str, Any] | None = None) -> str:
-        """Submit TTS — auto-routes to the appropriate track."""
-        track = self._pick_track(workflow)
-        engine = self._engines[track]
+        """Submit TTS — synchronously synthesizes, returns job_id immediately."""
+        params = params or {}
+        job_id = str(uuid.uuid4())[:12]
+        task_id = params.get("task_id", job_id)
 
-        # Check health first
-        health = await engine.health()
-        if not health.get("available"):
-            # Fallback: try bilingual track for any language
-            bilingual_engine = self._engines.get(TTSTrack.BILINGUAL)
-            if bilingual_engine and bilingual_engine is not engine:
-                bh = await bilingual_engine.health()
-                if bh.get("available"):
-                    logger.warning(
-                        "TTS track %s offline, falling back to bilingual for job",
-                        track.value,
-                    )
-                    return await bilingual_engine.submit(workflow, params)
-            raise RuntimeError(
-                f"TTS track '{track.value}' ({engine.name}) is offline and no fallback available. "
-                f"Start the service: {engine._config.base_url}"
+        text = workflow.get("text", "") or params.get("text", "")
+        output_path = workflow.get("output_path", "") or f"{self._output_root}/{task_id}/voice.wav"
+
+        backend, language = self._pick_track_params(workflow)
+
+        logger.info(
+            "TTS job %s: submit (text=%s, backend=%s, language=%s)",
+            job_id, text[:60], backend, language,
+        )
+
+        # Synchronous TTS via TrackManager (in-process, no HTTP)
+        result = await self._manager.synthesize(
+            text=text,
+            voice=workflow.get("voice", "default"),
+            speed=workflow.get("speed", 1.0),
+            backend=backend,
+            language=language,
+            reference_audio=workflow.get("reference_audio", ""),
+            output_path=output_path,
+        )
+
+        if "error" in result:
+            self._results[job_id] = {
+                "status": "failed",
+                "progress": 0.0,
+                "error": result["error"],
+                "output_path": "",
+                "duration_sec": 0.0,
+                "track": result.get("track", ""),
+                "fallback_from": result.get("fallback_from", ""),
+            }
+            logger.error("TTS job %s failed: %s", job_id, result["error"])
+        else:
+            self._results[job_id] = {
+                "status": "completed",
+                "progress": 100.0,
+                "error": "",
+                "output_path": result.get("output_path", output_path),
+                "duration_sec": result.get("duration_sec", 0.0),
+                "track": result.get("track", ""),
+                "fallback_from": result.get("fallback_from", ""),
+                "sample_rate": result.get("sample_rate", 0),
+                "backend": result.get("backend", ""),
+            }
+            logger.info(
+                "TTS job %s completed (track=%s, duration=%.1fs, output=%s)",
+                job_id, result.get("track", ""),
+                result.get("duration_sec", 0), result.get("output_path", ""),
             )
 
-        # Inject track info
-        workflow_copy = {**workflow, "track": track.value}
-        return await engine.submit(workflow_copy, params)
+        return job_id
 
     async def poll(self, engine_job_id: str) -> dict[str, Any]:
-        """Poll across all track engines."""
-        for engine in self._engines.values():
-            result = await engine.poll(engine_job_id)
-            if result["status"] != "failed" or "Unknown job" not in result.get("error", ""):
-                result["track"] = engine.track.value
-                return result
+        """Poll — always completed/failed since TTS is synchronous."""
+        result = self._results.get(engine_job_id)
+        if result:
+            return {
+                "status": result["status"],
+                "progress": result["progress"],
+                "error": result.get("error", ""),
+                "track": result.get("track", ""),
+            }
         return {"status": "failed", "progress": 0.0, "error": "Unknown job ID"}
 
     async def get_output(self, engine_job_id: str) -> dict[str, Any]:
-        for engine in self._engines.values():
-            result = await engine.get_output(engine_job_id)
-            if result["outputs"]:
-                return result
-        return {"outputs": []}
+        """Return audio artifact for a completed job."""
+        result = self._results.get(engine_job_id)
+        if not result or result["status"] != "completed":
+            return {"outputs": []}
+
+        artifacts = [{
+            "url": f"file://{result['output_path']}",
+            "path": result["output_path"],
+            "type": "audio",
+            "format": "wav",
+            "track": result.get("track", ""),
+            "backend": result.get("backend", ""),
+            "duration_sec": result.get("duration_sec", 0.0),
+            "sample_rate": result.get("sample_rate", 0),
+        }]
+        return {"outputs": artifacts}
 
     async def cancel(self, engine_job_id: str) -> bool:
-        for engine in self._engines.values():
-            if await engine.cancel(engine_job_id):
-                return True
+        """Cancel is meaningless — TTS completes synchronously."""
         return False
 
     async def health(self) -> dict[str, Any]:
-        """Report health for all tracks."""
-        tracks = {}
-        all_online = True
-        for track, engine in self._engines.items():
-            h = await engine.health()
-            tracks[track.value] = h
-            if not h.get("available"):
-                all_online = False
-
-        online_count = sum(1 for t in tracks.values() if t.get("available"))
+        """Report health from TrackManager."""
+        status = self._manager.get_status()
+        any_loaded = any(t["loaded"] for t in status["tracks"].values())
+        online_count = sum(1 for t in status["tracks"].values() if t["loaded"])
         return {
-            "status": EngineStatus.ONLINE.value if all_online else EngineStatus.BUSY.value if online_count > 0 else EngineStatus.OFFLINE.value,
-            "available": all_online,
-            "tracks": tracks,
+            "status": EngineStatus.ONLINE.value,
+            "available": True,  # Always available (lazy-loads on demand)
+            "mode": "in-process (lazy-load)",
+            "tracks": status["tracks"],
             "online_tracks": online_count,
-            "total_tracks": len(self._engines),
+            "total_tracks": len(status["tracks"]),
+            "total_vram_mb": status["total_vram_mb"],
+            "idle_timeout": self._idle_timeout,
             "routing_summary": {
-                "zh": "GPT-SoVITS (:9880)",
-                "en": "Chatterbox-Turbo (:9881)",
-                "bilingual": "CosyVoice-3.0 (:9882)",
+                "zh": "GPT-SoVITS (gpt_sovits)",
+                "en": "Chatterbox-Turbo (chatterbox)",
+                "bilingual": "CosyVoice-300M (cosyvoice)",
             },
         }
-
-    # ─── Convenience: direct submit to specific track ───
-
-    async def submit_zh(self, text: str, **kwargs) -> str:
-        """Submit Chinese TTS directly to GPT-SoVITS."""
-        return await self._engines[TTSTrack.ZH].submit({"text": text, **kwargs})
-
-    async def submit_en(self, text: str, **kwargs) -> str:
-        """Submit English TTS directly to Chatterbox-Turbo."""
-        return await self._engines[TTSTrack.EN].submit({"text": text, **kwargs})
-
-    async def submit_bilingual(self, text: str, **kwargs) -> str:
-        """Submit bilingual TTS directly to CosyVoice."""
-        return await self._engines[TTSTrack.BILINGUAL].submit({"text": text, **kwargs})
