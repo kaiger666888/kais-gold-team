@@ -18,6 +18,7 @@ from src.v6.models.task import (
     BatchTaskResult,
     ErrorResponse,
     GenerationTask,
+    ModelPreference,
     Priority,
     TaskAcceptedResponse,
     TaskCancelResponse,
@@ -48,11 +49,25 @@ async def create_task(req: TaskCreateRequest):
         })
 
     # Build task
+    # Allow params.backend to override model_preference
+    effective_preference = req.model_preference
+    backend = req.params.get("backend") if isinstance(req.params, dict) else None
+    if backend:
+        try:
+            effective_preference = ModelPreference(backend)
+        except ValueError:
+            if "cloud" in str(backend).lower():
+                effective_preference = ModelPreference.CLOUD
+            elif "local" in str(backend).lower():
+                effective_preference = ModelPreference.LOCAL
+            else:
+                logger.warning("Unknown backend '%s', using model_preference=%s", backend, req.model_preference)
+
     task = GenerationTask(
         task_id=req.task_id,
         type=req.type,
         priority=req.priority,
-        model_preference=req.model_preference,
+        model_preference=effective_preference,
         params=req.params,
         callback_url=req.callback_url,
         callback_secret=req.callback_secret,
@@ -169,11 +184,23 @@ async def batch_create(req: BatchCreateRequest):
                 break
             continue
 
+        # Allow params.backend to override model_preference
+        eff_pref = task_req.model_preference
+        be = task_req.params.get("backend") if isinstance(task_req.params, dict) else None
+        if be:
+            try:
+                eff_pref = ModelPreference(be)
+            except ValueError:
+                if "cloud" in str(be).lower():
+                    eff_pref = ModelPreference.CLOUD
+                elif "local" in str(be).lower():
+                    eff_pref = ModelPreference.LOCAL
+
         task = GenerationTask(
             task_id=task_req.task_id,
             type=task_req.type,
             priority=task_req.priority,
-            model_preference=task_req.model_preference,
+            model_preference=eff_pref,
             params=task_req.params,
             callback_url=task_req.callback_url,
             callback_secret=task_req.callback_secret,

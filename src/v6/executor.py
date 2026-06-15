@@ -153,61 +153,219 @@ class TaskExecutor:
                     )
                     logger.info("Auto-built TTS workflow for task %s (lang=%s, track=%s)", task.task_id, lang, track)
                 elif task.type == TaskType.IMAGE_TO_3D:
-                    from src.v6.engines.workflow_builder import build_hunyuan3d_workflow
-                    input_image = task.params.get("input_image") or task.params.get("image", "")
-                    if not input_image:
-                        logger.error("IMAGE_TO_3D requires 'input_image' param, task %s", task.task_id)
-                        await store.update(
-                            task.task_id,
-                            status=TaskStatus.FAILED,
-                            error="IMAGE_TO_3D requires 'input_image' param",
+                    extra = task.params.get("extra", {})
+                    extra_engine = extra.get("engine", "")
+                    extra_mode = extra.get("mode", "")
+
+                    if extra_mode == "flux_trellis":
+                        # WFB-05: FLUX -> TRELLIS full pipeline
+                        from src.v6.engines.workflow_builder import build_flux_trellis_full_workflow
+                        workflow = build_flux_trellis_full_workflow(
+                            prompt=task.params.get("prompt", ""),
+                            negative_prompt=task.params.get("negative_prompt", ""),
+                            flux_steps=task.params.get("flux_steps", 20),
+                            flux_cfg=task.params.get("flux_cfg", 3.5),
+                            width=task.params.get("width", 1024),
+                            height=task.params.get("height", 1024),
+                            trellis_resolution=task.params.get("trellis_resolution", 1024),
+                            trellis_steps=task.params.get("trellis_steps", 25),
+                            trellis_cfg=task.params.get("trellis_cfg", 7.5),
+                            shape_guidance=task.params.get("shape_guidance", 0.5),
+                            texture_resolution=task.params.get("texture_resolution", 1024),
+                            pbr_channels=task.params.get("pbr_channels", "full"),
+                            output_format=task.params.get("output_format", "glb"),
+                            seed=task.params.get("seed"),
                         )
-                        return
-                    workflow = build_hunyuan3d_workflow(
-                        input_image=input_image,
-                        output_path=task.params.get("output_path", ""),
-                        model=task.params.get("model", "full"),
-                        device=task.params.get("device", "cuda:0"),
-                        steps=task.params.get("steps", 50),
-                        seed=task.params.get("seed"),
-                        model_dir=task.params.get("model_dir", ""),
-                        task_id=task.task_id,
-                    )
-                    logger.info("Auto-built Hunyuan3D workflow for task %s", task.task_id)
-                elif task.params.get("model") == "flux-dev":
-                    from src.v6.engines.workflow_builder import build_flux_dev_workflow
-                    workflow = build_flux_dev_workflow(
-                        prompt=task.params.get("prompt", ""),
-                        negative_prompt=task.params.get("negative_prompt", ""),
-                        width=task.params.get("width", 1024),
-                        height=task.params.get("height", 1024),
-                        steps=task.params.get("steps", 28),
-                        cfg_scale=task.params.get("cfg_scale", 3.5),
-                        seed=task.params.get("seed"),
-                    )
-                    logger.info("Auto-built FLUX Dev workflow for task %s", task.task_id)
-                elif task.params.get("model") == "flux-dev-ipa":
-                    from src.v6.engines.workflow_builder import build_flux_ipadapter_workflow
-                    ref_img = task.params.get("reference_image", "")
-                    if not ref_img:
-                        logger.error("flux-dev-ipa requires 'reference_image' param, task %s", task.task_id)
-                        await store.update(task.task_id, status=TaskStatus.FAILED, error="flux-dev-ipa requires 'reference_image' param")
-                        return
-                    workflow = build_flux_ipadapter_workflow(
-                        prompt=task.params.get("prompt", ""),
-                        reference_image=ref_img,
-                        negative_prompt=task.params.get("negative_prompt", ""),
-                        width=task.params.get("width", 1024),
-                        height=task.params.get("height", 1024),
-                        steps=task.params.get("steps", 28),
-                        cfg_scale=task.params.get("cfg_scale", 3.5),
-                        weight=task.params.get("weight", 0.8),
-                        start_percent=task.params.get("start_percent", 0.0),
-                        end_percent=task.params.get("end_percent", 0.8),
-                        seed=task.params.get("seed"),
-                        filename_prefix=task.params.get("filename_prefix", "flux-ipadapter"),
-                    )
-                    logger.info("Auto-built FLUX Dev + IP-Adapter workflow for task %s", task.task_id)
+                        logger.info("Auto-built FLUX+TRELLIS full pipeline workflow for task %s", task.task_id)
+                    elif extra_engine == "trellis":
+                        # WFB-04: TRELLIS image-to-3D
+                        from src.v6.engines.workflow_builder import build_trellis_image_to_3d_workflow
+                        input_image = task.params.get("input_image") or task.params.get("image", "")
+                        if not input_image:
+                            logger.error("TRELLIS IMAGE_TO_3D requires 'input_image' param, task %s", task.task_id)
+                            await store.update(
+                                task.task_id,
+                                status=TaskStatus.FAILED,
+                                error="TRELLIS IMAGE_TO_3D requires 'input_image' param",
+                            )
+                            return
+                        workflow = build_trellis_image_to_3d_workflow(
+                            image_name=input_image,
+                            resolution=task.params.get("resolution", 1024),
+                            steps=task.params.get("steps", 25),
+                            cfg_scale=task.params.get("cfg_scale", 7.5),
+                            shape_guidance=task.params.get("shape_guidance", 0.5),
+                            texture_resolution=task.params.get("texture_resolution", 1024),
+                            pbr_channels=task.params.get("pbr_channels", "full"),
+                            remove_background=task.params.get("remove_background", True),
+                            output_format=task.params.get("output_format", "glb"),
+                            seed=task.params.get("seed"),
+                            filename_prefix=task.params.get("filename_prefix", "trellis_3d"),
+                        )
+                        logger.info("Auto-built TRELLIS image-to-3D workflow for task %s", task.task_id)
+                    else:
+                        # Default: Hunyuan3D (unchanged)
+                        from src.v6.engines.workflow_builder import build_hunyuan3d_workflow
+                        input_image = task.params.get("input_image") or task.params.get("image", "")
+                        if not input_image:
+                            logger.error("IMAGE_TO_3D requires 'input_image' param, task %s", task.task_id)
+                            await store.update(
+                                task.task_id,
+                                status=TaskStatus.FAILED,
+                                error="IMAGE_TO_3D requires 'input_image' param",
+                            )
+                            return
+                        workflow = build_hunyuan3d_workflow(
+                            input_image=input_image,
+                            output_path=task.params.get("output_path", ""),
+                            model=task.params.get("model", "full"),
+                            device=task.params.get("device", "cuda:0"),
+                            steps=task.params.get("steps", 50),
+                            seed=task.params.get("seed"),
+                            model_dir=task.params.get("model_dir", ""),
+                            task_id=task.task_id,
+                        )
+                        logger.info("Auto-built Hunyuan3D workflow for task %s", task.task_id)
+                elif task.type == TaskType.IMAGE_DRAW:
+                    # -- IMAGE_DRAW routing: params.extra.mode first, then model-based fallback --
+                    extra = task.params.get("extra", {})
+                    extra_mode = extra.get("mode", "") if isinstance(extra, dict) else ""
+                    model = task.params.get("model", "")
+
+                    if extra_mode == "ipadapter":
+                        # IP-Adapter character consistency via params.extra.mode
+                        from src.v6.engines.workflow_builder import build_flux_ipadapter_workflow
+                        ref_img = task.params.get("reference_image", "")
+                        if not ref_img:
+                            logger.error("IMAGE_DRAW ipadapter requires 'reference_image' param, task %s", task.task_id)
+                            await store.update(
+                                task.task_id,
+                                status=TaskStatus.FAILED,
+                                error="IMAGE_DRAW ipadapter requires 'reference_image' param",
+                            )
+                            return
+                        workflow = build_flux_ipadapter_workflow(
+                            prompt=task.params.get("prompt", ""),
+                            reference_image=ref_img,
+                            negative_prompt=task.params.get("negative_prompt", ""),
+                            width=task.params.get("width", 1024),
+                            height=task.params.get("height", 1024),
+                            steps=task.params.get("steps", 28),
+                            cfg_scale=task.params.get("cfg_scale", 3.5),
+                            weight=task.params.get("weight", 0.8),
+                            start_percent=task.params.get("start_percent", 0.0),
+                            end_percent=task.params.get("end_percent", 0.8),
+                            seed=task.params.get("seed"),
+                            filename_prefix=task.params.get("filename_prefix", "flux-ipadapter"),
+                        )
+                        logger.info("Auto-built IP-Adapter workflow for IMAGE_DRAW task %s (extra.mode=ipadapter)", task.task_id)
+
+                    elif extra_mode == "pulid":
+                        # PuLID character consistency via params.extra.mode
+                        from src.v6.engines.workflow_builder import build_pulid_flux_workflow
+                        ref_img = task.params.get("image", "") or task.params.get("reference_image", "")
+                        if not ref_img:
+                            logger.error("IMAGE_DRAW pulid requires 'image' or 'reference_image' param, task %s", task.task_id)
+                            await store.update(
+                                task.task_id,
+                                status=TaskStatus.FAILED,
+                                error="IMAGE_DRAW pulid requires 'image' or 'reference_image' param",
+                            )
+                            return
+                        workflow = build_pulid_flux_workflow(
+                            image_name=ref_img,
+                            prompt=task.params.get("prompt", ""),
+                            negative_prompt=task.params.get("negative_prompt", ""),
+                            width=task.params.get("width", 1024),
+                            height=task.params.get("height", 1024),
+                            steps=task.params.get("steps", 28),
+                            cfg_scale=task.params.get("cfg_scale", 3.5),
+                            weight=task.params.get("weight", 1.0),
+                            seed=task.params.get("seed"),
+                            filename_prefix=task.params.get("filename_prefix", "pulid_flux"),
+                        )
+                        logger.info("Auto-built PuLID workflow for IMAGE_DRAW task %s (extra.mode=pulid)", task.task_id)
+
+                    elif extra_mode == "instantid":
+                        # InstantID character consistency (reuses IP-Adapter infrastructure)
+                        from src.v6.engines.workflow_builder import build_flux_ipadapter_workflow
+                        ref_img = task.params.get("reference_image", "")
+                        if not ref_img:
+                            logger.error("IMAGE_DRAW instantid requires 'reference_image' param, task %s", task.task_id)
+                            await store.update(
+                                task.task_id,
+                                status=TaskStatus.FAILED,
+                                error="IMAGE_DRAW instantid requires 'reference_image' param",
+                            )
+                            return
+                        workflow = build_flux_ipadapter_workflow(
+                            prompt=task.params.get("prompt", ""),
+                            reference_image=ref_img,
+                            negative_prompt=task.params.get("negative_prompt", ""),
+                            width=task.params.get("width", 1024),
+                            height=task.params.get("height", 1024),
+                            steps=task.params.get("steps", 28),
+                            cfg_scale=task.params.get("cfg_scale", 3.5),
+                            weight=task.params.get("weight", 0.8),
+                            start_percent=task.params.get("start_percent", 0.0),
+                            end_percent=task.params.get("end_percent", 0.8),
+                            seed=task.params.get("seed"),
+                            filename_prefix=task.params.get("filename_prefix", "flux-instantid"),
+                        )
+                        logger.info("Auto-built InstantID workflow for IMAGE_DRAW task %s (extra.mode=instantid, reuses IP-Adapter)", task.task_id)
+
+                    elif model == "flux-dev-ipa":
+                        # Legacy: model="flux-dev-ipa" backward compatibility
+                        from src.v6.engines.workflow_builder import build_flux_ipadapter_workflow
+                        ref_img = task.params.get("reference_image", "")
+                        if not ref_img:
+                            logger.error("flux-dev-ipa requires 'reference_image' param, task %s", task.task_id)
+                            await store.update(task.task_id, status=TaskStatus.FAILED, error="flux-dev-ipa requires 'reference_image' param")
+                            return
+                        workflow = build_flux_ipadapter_workflow(
+                            prompt=task.params.get("prompt", ""),
+                            reference_image=ref_img,
+                            negative_prompt=task.params.get("negative_prompt", ""),
+                            width=task.params.get("width", 1024),
+                            height=task.params.get("height", 1024),
+                            steps=task.params.get("steps", 28),
+                            cfg_scale=task.params.get("cfg_scale", 3.5),
+                            weight=task.params.get("weight", 0.8),
+                            start_percent=task.params.get("start_percent", 0.0),
+                            end_percent=task.params.get("end_percent", 0.8),
+                            seed=task.params.get("seed"),
+                            filename_prefix=task.params.get("filename_prefix", "flux-ipadapter"),
+                        )
+                        logger.info("Auto-built FLUX Dev + IP-Adapter workflow for task %s (legacy model=flux-dev-ipa)", task.task_id)
+
+                    elif model == "flux-dev":
+                        # Legacy: model="flux-dev"
+                        from src.v6.engines.workflow_builder import build_flux_dev_workflow
+                        workflow = build_flux_dev_workflow(
+                            prompt=task.params.get("prompt", ""),
+                            negative_prompt=task.params.get("negative_prompt", ""),
+                            width=task.params.get("width", 1024),
+                            height=task.params.get("height", 1024),
+                            steps=task.params.get("steps", 28),
+                            cfg_scale=task.params.get("cfg_scale", 3.5),
+                            seed=task.params.get("seed"),
+                        )
+                        logger.info("Auto-built FLUX Dev workflow for task %s (model=flux-dev)", task.task_id)
+
+                    else:
+                        # Default: FLUX Dev FP8 for IMAGE_DRAW
+                        from src.v6.engines.workflow_builder import build_flux_dev_workflow
+                        workflow = build_flux_dev_workflow(
+                            prompt=task.params.get("prompt", ""),
+                            negative_prompt=task.params.get("negative_prompt", ""),
+                            width=task.params.get("width", 1024),
+                            height=task.params.get("height", 1024),
+                            steps=task.params.get("steps", 28),
+                            cfg_scale=task.params.get("cfg_scale", 3.5),
+                            seed=task.params.get("seed"),
+                        )
+                        logger.info("Auto-built FLUX Dev workflow for IMAGE_DRAW task %s (default)", task.task_id)
+
                 elif task.type == TaskType.IMAGE_PULID:
                     from src.v6.engines.workflow_builder import build_pulid_flux_workflow
                     ref_img = task.params.get("image", "") or task.params.get("reference_image", "")
@@ -272,40 +430,94 @@ class TaskExecutor:
                     )
                     logger.info("Auto-built Wan 2.2 I2V dual-stage workflow for task %s", task.task_id)
                 elif task.type == TaskType.VIDEO_FINAL or task.type == TaskType.VIDEO_PREVIEW:
-                    # VIDEO_FINAL/VIDEO_PREVIEW = alias for wan_i2v (video output)
-                    from src.v6.engines.workflow_builder import build_wan21_i2v_dual_stage_workflow
-                    src_img = task.params.get("image", "")
-                    if not src_img:
-                        logger.error("VIDEO_FINAL/VIDEO_PREVIEW requires 'image' param, task %s", task.task_id)
-                        await store.update(task.task_id, status=TaskStatus.FAILED, error="VIDEO_FINAL/VIDEO_PREVIEW requires 'image' param")
-                        return
-                    workflow = build_wan21_i2v_dual_stage_workflow(
-                        image_name=src_img,
-                        prompt=task.params.get("prompt", ""),
-                        width=task.params.get("width", 832),
-                        height=task.params.get("height", 480),
-                        length=task.params.get("length", 81),
-                        steps=task.params.get("steps", 20),
-                        cfg=task.params.get("cfg", 3.5),
-                        shift=task.params.get("shift", 8.0),
-                        high_noise_end=task.params.get("high_noise_end", 10.0),
-                        seed=task.params.get("seed"),
-                        filename_prefix=task.params.get("filename_prefix", f"{task.type.value}_{task.task_id}"),
-                    )
-                    logger.info("Auto-built VIDEO_FINAL/VIDEO_PREVIEW workflow (=wan_i2v) for task %s", task.task_id)
+                    extra_mode = task.params.get("extra", {}).get("mode", "")
+                    if extra_mode == "lip_sync":
+                        # -- Lip Sync via LatentSync --
+                        from src.v6.engines.workflow_builder import build_lipsync_workflow
+                        video_input = task.params.get("video", "")
+                        audio_input = task.params.get("audio_input", "")
+                        if not video_input or not audio_input:
+                            logger.error(
+                                "Lip sync requires 'video' and 'audio_input' params, task %s",
+                                task.task_id,
+                            )
+                            await store.update(
+                                task.task_id,
+                                status=TaskStatus.FAILED,
+                                error="Lip sync requires 'video' and 'audio_input' params",
+                            )
+                            return
+                        workflow = build_lipsync_workflow(
+                            video_input=video_input,
+                            audio_input=audio_input,
+                            seed=task.params.get("seed"),
+                            lips_expression=task.params.get("lips_expression", 1.5),
+                            inference_steps=task.params.get("inference_steps", 20),
+                            filename_prefix=task.params.get("filename_prefix", f"lipsync_{task.task_id}"),
+                        )
+                        logger.info("Auto-built LipSync workflow for task %s", task.task_id)
+                    else:
+                        # -- VIDEO_FINAL/VIDEO_PREVIEW = wan_i2v (default) --
+                        from src.v6.engines.workflow_builder import build_wan21_i2v_dual_stage_workflow
+                        src_img = task.params.get("image", "")
+                        if not src_img:
+                            logger.error("VIDEO_FINAL/VIDEO_PREVIEW requires 'image' param, task %s", task.task_id)
+                            await store.update(task.task_id, status=TaskStatus.FAILED, error="VIDEO_FINAL/VIDEO_PREVIEW requires 'image' param")
+                            return
+                        workflow = build_wan21_i2v_dual_stage_workflow(
+                            image_name=src_img,
+                            prompt=task.params.get("prompt", ""),
+                            width=task.params.get("width", 832),
+                            height=task.params.get("height", 480),
+                            length=task.params.get("length", 81),
+                            steps=task.params.get("steps", 20),
+                            cfg=task.params.get("cfg", 3.5),
+                            shift=task.params.get("shift", 8.0),
+                            high_noise_end=task.params.get("high_noise_end", 10.0),
+                            seed=task.params.get("seed"),
+                            filename_prefix=task.params.get("filename_prefix", f"{task.type.value}_{task.task_id}"),
+                        )
+                        logger.info("Auto-built VIDEO_FINAL/VIDEO_PREVIEW workflow (=wan_i2v) for task %s", task.task_id)
                 elif task.type == TaskType.UPSCALE:
-                    from src.v6.engines.workflow_builder import build_upscale_workflow
-                    src_img = task.params.get("image", "")
-                    if not src_img:
-                        logger.error("UPSCALE requires 'image' param, task %s", task.task_id)
-                        await store.update(task.task_id, status=TaskStatus.FAILED, error="UPSCALE requires 'image' param")
-                        return
-                    workflow = build_upscale_workflow(
-                        image_name=src_img,
-                        upscale_model_name=task.params.get("upscale_model_name", "4x-UltraSharp.pth"),
-                        filename_prefix=task.params.get("filename_prefix", "upscaled"),
-                    )
-                    logger.info("Auto-built Upscale workflow for task %s", task.task_id)
+                    extra_mode = task.params.get("extra", {}).get("mode", "")
+                    if extra_mode == "frame_interp":
+                        # -- Frame Interpolation via RIFE --
+                        from src.v6.engines.workflow_builder import build_frame_interpolate_workflow
+                        video_input = task.params.get("video", "")
+                        if not video_input:
+                            logger.error(
+                                "Frame interpolation requires 'video' param, task %s",
+                                task.task_id,
+                            )
+                            await store.update(
+                                task.task_id,
+                                status=TaskStatus.FAILED,
+                                error="Frame interpolation requires 'video' param",
+                            )
+                            return
+                        workflow = build_frame_interpolate_workflow(
+                            video_input=video_input,
+                            interpolation_factor=task.params.get("interpolation_factor", 2),
+                            ckpt_name=task.params.get("ckpt_name", "rife49.pth"),
+                            output_fps=task.params.get("output_fps"),
+                            seed=task.params.get("seed"),
+                            filename_prefix=task.params.get("filename_prefix", f"frame_interp_{task.task_id}"),
+                        )
+                        logger.info("Auto-built Frame Interpolation workflow for task %s", task.task_id)
+                    else:
+                        # -- UPSCALE = image upscale (default) --
+                        from src.v6.engines.workflow_builder import build_upscale_workflow
+                        src_img = task.params.get("image", "")
+                        if not src_img:
+                            logger.error("UPSCALE requires 'image' param, task %s", task.task_id)
+                            await store.update(task.task_id, status=TaskStatus.FAILED, error="UPSCALE requires 'image' param")
+                            return
+                        workflow = build_upscale_workflow(
+                            image_name=src_img,
+                            upscale_model_name=task.params.get("upscale_model_name", "4x-UltraSharp.pth"),
+                            filename_prefix=task.params.get("filename_prefix", "upscaled"),
+                        )
+                        logger.info("Auto-built Upscale workflow for task %s", task.task_id)
                 elif task.type == TaskType.FACE_RESTORE:
                     from src.v6.engines.workflow_builder import build_face_restore_workflow
                     src_img = task.params.get("image", "")
@@ -400,6 +612,25 @@ class TaskExecutor:
                             seed=task.params.get("seed"),
                         )
                         logger.info("Auto-built FLUX Dev workflow for task %s (default)", task.task_id)
+            # Cloud engines need simple dict, not ComfyUI workflow
+            if task.engine_used == EnginePool.CLOUD:
+                workflow = {
+                    "prompt": task.params.get("prompt", ""),
+                    "width": task.params.get("width", 1024),
+                    "height": task.params.get("height", 1024),
+                    "negative_prompt": task.params.get("negative_prompt", ""),
+                    "steps": task.params.get("steps", 20),
+                    "seed": task.params.get("seed"),
+                    "model": task.params.get("model"),
+                    "resolution": task.params.get("resolution"),
+                    "duration": task.params.get("duration"),
+                    "strength": task.params.get("strength", 0.5),
+                    "input_image": task.params.get("image", task.params.get("input_image", "")),
+                    "reference_image": task.params.get("reference_image", ""),
+                    "reference_strength": task.params.get("reference_strength", 0.6),
+                }
+                logger.info("Cloud engine %s: simple workflow for task %s", engine.engine_id, task.task_id)
+
             engine_params = {"task_id": task.task_id, "type": task.type.value}
 
             engine_job_id = await engine.submit(workflow, engine_params)
@@ -512,8 +743,14 @@ class TaskExecutor:
         regardless of what engine_id the router assigned.
         """
         # Dedicated engine routing — specialized engines override router
+        # TRELLIS bypass: IMAGE_TO_3D + trellis/flux_trellis goes to comfyui-primary
         from src.v6.engine.router import DEDICATED_ENGINES
-        dedicated_id = DEDICATED_ENGINES.get(task.type)
+        extra = task.params.get("extra", {})
+        is_trellis = (
+            task.type == TaskType.IMAGE_TO_3D
+            and (extra.get("engine") == "trellis" or extra.get("mode") == "flux_trellis")
+        )
+        dedicated_id = None if is_trellis else DEDICATED_ENGINES.get(task.type)
         if dedicated_id:
             dedicated_engine = self._engines.get(dedicated_id)
             if dedicated_engine:
