@@ -1,6 +1,7 @@
 """kais-gold-team V6.0 — FastAPI application entry point."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -11,10 +12,11 @@ from fastapi import FastAPI
 
 from src.v6.engine.local_pool import get_local_pool
 from src.v6.engine_pool import EnginePool, get_engine_pool
+from src.v6.engines.base import BackendType
 from src.v6.executor import get_executor
 from src.v6.engines.mock import MockEngine
 from src.v6.engines.tts import TTSTracker
-from src.v6.engines.acestep import ACEStepEngine
+from src.v6.engines.tts_http import TripleTrackTTSEngine
 from src.v6.engines.hunyuan3d import Hunyuan3DEngine
 from src.v6.engines.hunyuan3d_mv import Hunyuan3DMvEngine
 from src.v6.gpu_monitor import get_gpu_vram_usage
@@ -23,6 +25,14 @@ from src.v6.routers import tasks, engines, events, health
 
 # GPU management routes
 from src.v6.routes.v1.gpu import router as gpu_router
+
+# Unified TTS server subprocess management
+TTS_UNIFIED_SCRIPT = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "..", "..", "scripts", "tts_unified_server.py",
+)
+TTS_UNIFIED_ENABLED = os.environ.get("TTS_UNIFIED_ENABLED", "true").lower() in ("true", "1", "yes")
+TTS_UNIFIED_PORT = int(os.environ.get("TTS_UNIFIED_PORT", "9880"))
 
 logging.basicConfig(
     level=logging.INFO,
@@ -41,32 +51,97 @@ COMFYUI_PRIMARY_PORT = int(os.environ.get("COMFYUI_PRIMARY_PORT", "8188"))
 COMFYUI_AUX_HOST = os.environ.get("COMFYUI_AUX_HOST", "")
 COMFYUI_AUX_PORT = int(os.environ.get("COMFYUI_AUX_PORT", "8189"))
 
+# ACE-Step music generation sidecar (v1.4 FIX-05: explicit registration)
+# Default to enabled when an external API host is configured (production compose
+# always sets ACESTEP_API_HOST=kais-acestep). Set ACESTEP_ENABLED=false to disable.
+ACESTEP_ENABLED = os.environ.get(
+    "ACESTEP_ENABLED",
+    "true" if os.environ.get("ACESTEP_API_HOST", "") else "false",
+).lower() in ("true", "1", "yes")
+
+
+def _format_registration_summary(executor) -> str:
+    """Build a grouped registration summary string organised by backend type.
+
+    Returns a multi-line string like:
+        [COMFYUI]
+          comfyui-primary — ComfyUI (primary)
+          comfyui-auxiliary — ComfyUI (auxiliary)
+        [SUBPROCESS]
+          tts-http — Triple-Track TTS
+        ...
+    Empty sections are omitted.
+    """
+    section_order = [
+        BackendType.COMFYUI,
+        BackendType.SUBPROCESS,
+        BackendType.CLOUD,
+        BackendType.DOCKER,
+        BackendType.MOCK,
+    ]
+    groups: dict[BackendType, list[tuple[str, str]]] = {bt: [] for bt in section_order}
+    for engine in executor.list_engines():
+        bt = engine.backend_type
+        groups.setdefault(bt, []).append((engine.engine_id, engine.name))
+
+    lines: list[str] = []
+    for bt in section_order:
+        entries = groups.get(bt, [])
+        if not entries:
+            continue
+        lines.append(f"[{bt.value.upper()}]")
+        for eid, name in entries:
+            lines.append(f"  {eid} — {name}")
+
+    return "\n".join(lines)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     executor = get_executor()
 
+    # ── Mock ────────────────────────────────────────────────────────────
     # Always register mock engine for development
     executor.register_engine(MockEngine())
 
-    # Register TTS engine (CosyVoice / edge-tts)
-    try:
-        tts_engine = TTSTracker()
-        await tts_engine.start()
-        executor.register_engine(tts_engine)
-        logger.info("TTS engine registered (3-track tracker)")
-    except Exception as e:
-        logger.warning("TTS engine init failed: %s", e)
+    # ── Subprocess Backend ──────────────────────────────────────────────
+    # ── TTS unified server (lazy-load subprocess) ────────────────────
+    tts_unified_process = None
+    if TTS_UNIFIED_ENABLED:
+        try:
+            script = os.path.abspath(TTS_UNIFIED_SCRIPT)
+            tts_unified_process = await asyncio.create_subprocess_exec(
+                "python3", script,
+                "--port", str(TTS_UNIFIED_PORT),
+                "--idle-timeout", "300",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            logger.info("Unified TTS server subprocess started (pid=%d, port=%d)",
+                        tts_unified_process.pid, TTS_UNIFIED_PORT)
+            await asyncio.sleep(2)
+        except Exception as e:
+            logger.warning("Failed to start unified TTS server: %s", e)
 
-    # ACE-Step engine disabled — music generation runs via ComfyUI
-    # try:
-    #     acestep_engine = ACEStepEngine()
-    #     await acestep_engine.start()
-    #     executor.register_engine(acestep_engine)
-    #     logger.info("ACE-Step engine registered")
-    # except Exception as e:
-    #     logger.warning("ACE-Step engine init failed: %s", e)
+    # Register TTS engines
+    # Triple-Track HTTP engine (preferred for TTS tasks)
+    try:
+        tts_http = TripleTrackTTSEngine()
+        await tts_http.start()
+        executor.register_engine(tts_http)
+        logger.info("Triple-Track TTS engine registered")
+    except Exception as e:
+        logger.warning("Triple-Track TTS engine init failed: %s", e)
+
+    # TTS Tracker (CosyVoice in-process + edge-tts fallback)
+    try:
+        tts_tracker = TTSTracker()
+        await tts_tracker.start()
+        executor.register_engine(tts_tracker)
+        logger.info("TTS tracker engine registered")
+    except Exception as e:
+        logger.warning("TTS tracker engine init failed: %s", e)
 
     # Register Hunyuan3D-2 engine (image-to-3D via subprocess)
     try:
@@ -86,6 +161,38 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Hunyuan3D-2mv engine init failed: %s", e)
 
+    # Register Kimodo motion generation engine (in-process, lazy-load)
+    try:
+        from src.v6.engines.kimodo import KimodoEngine
+        kimodo_engine = KimodoEngine()
+        await kimodo_engine.start()
+        executor.register_engine(kimodo_engine)
+        logger.info("Kimodo motion engine registered")
+    except Exception as e:
+        logger.warning("Kimodo engine init failed: %s", e)
+
+    # ── Docker Backend ──────────────────────────────────────────────────
+    # Register ACE-Step music generation engine (sidecar container via HTTP).
+    # v1.4 FIX-05: explicit registration — previously relied on YAML registry
+    # fallback which silently missed it. Engine reports BackendType.DOCKER.
+    if ACESTEP_ENABLED:
+        try:
+            from src.v6.engines.acestep import ACEStepEngine
+            acestep_engine = ACEStepEngine()
+            await acestep_engine.start()
+            executor.register_engine(acestep_engine)
+            acestep_health = await acestep_engine.health()
+            if acestep_health.get("available"):
+                logger.info("ACE-Step engine registered (online) → %s",
+                            acestep_health.get("url", ""))
+            else:
+                logger.info("ACE-Step engine registered (offline — sidecar not running)")
+        except ImportError:
+            logger.warning("ACEStepEngine not available, skipping")
+        except Exception as e:
+            logger.warning("ACE-Step engine init failed: %s", e)
+
+    # ── ComfyUI Backend ─────────────────────────────────────────────────
     # Register ComfyUI engine(s)
     # Dual-engine mode when COMFYUI_PRIMARY_HOST is set; otherwise legacy single-engine fallback
     if COMFYUI_ENABLED:
@@ -146,13 +253,32 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning("ComfyUI engine init failed: %s", e)
 
+    # Register JoyCaption engine (image captioning via ComfyUI)
+    try:
+        from src.v6.engines.joycaption import JoyCaptionEngine
+        _jc_host = os.environ.get("COMFYUI_URL", "").replace("http://", "").rsplit(":", 1)[0] or COMFYUI_HOST
+        _jc_port = int(os.environ.get("COMFYUI_URL", "").rsplit(":", 1)[1].split("/")[0]) if ":" in os.environ.get("COMFYUI_URL", "") else COMFYUI_PORT
+        joycaption = JoyCaptionEngine(host=_jc_host, port=_jc_port)
+        await joycaption.start()
+        jc_health = await joycaption.health()
+        if jc_health.get("available"):
+            executor.register_engine(joycaption)
+            logger.info("JoyCaption engine registered (online) → %s:%s", _jc_host, _jc_port)
+        else:
+            logger.warning("JoyCaption engine offline at %s:%s", _jc_host, _jc_port)
+    except ImportError:
+        logger.warning("JoyCaptionEngine not available, skipping")
+    except Exception as e:
+        logger.warning("JoyCaption engine init failed: %s", e)
+
+    # ── Cloud Backend ───────────────────────────────────────────────────
     # Register cloud engines (Jimeng/Kling/Seedance)
     try:
         from src.v6.engines.cloud_jimeng import JimengEngine
         from src.v6.engines.cloud_kling import KlingEngine
-        from src.v6.engines.cloud_seedance import SeedanceEngine
+        # SeedanceEngine removed — video disabled, use LTX-2.3 via ComfyUI
 
-        for cloud_cls in [JimengEngine, KlingEngine, SeedanceEngine]:
+        for cloud_cls in [JimengEngine, KlingEngine]:
             try:
                 cloud_engine = cloud_cls()
                 await cloud_engine.start()
@@ -167,8 +293,8 @@ async def lifespan(app: FastAPI):
 
     await executor.start()
 
-    # Register local Docker engines from engines/*.yaml (32-node routing table)
-    # Engines are registered with the EnginePool for lazy GPU loading
+    # ── Docker/YAML Backend ─────────────────────────────────────────────
+    # Register local Docker engines from engines/*.yaml (routing table)
     try:
         from src.v6.config.engine_registry import VRAM_ESTIMATES, build_engine_registry
         from src.v6.engines.docker_base import DockerAPIEngine
@@ -178,7 +304,6 @@ async def lifespan(app: FastAPI):
                 engines_dir=engines_dir,
                 workspace="/workspace",
             )
-            # Group unique engine instances by engine_id to avoid duplicate registrations
             seen_ids: dict[str, object] = {}
             for task_type, engine in local_engines.items():
                 if engine.engine_id not in seen_ids:
@@ -187,22 +312,19 @@ async def lifespan(app: FastAPI):
             pool = get_engine_pool()
             for eid, engine_instance in seen_ids.items():
                 vram_mb = 0
-                # Derive vram from engine name
                 for name_key, est in VRAM_ESTIMATES.items():
                     if name_key in eid.lower():
                         vram_mb = est
                         break
                 if vram_mb == 0:
-                    vram_mb = 4000  # default estimate
+                    vram_mb = 4000
 
-                # Build async loader
                 async def _make_loader(eng=engine_instance):
                     async def _loader():
                         await eng.start()
                         return eng
                     return _loader
 
-                # Build async unloader
                 async def _make_unloader(eng=engine_instance):
                     async def _unloader(_instance):
                         await eng.stop()
@@ -215,7 +337,6 @@ async def lifespan(app: FastAPI):
                     unloader=await _make_unloader(),
                 )
 
-            # Still register all task_type mappings with executor for routing
             for task_type, engine in local_engines.items():
                 executor.register_engine(engine)
 
@@ -225,7 +346,6 @@ async def lifespan(app: FastAPI):
         logger.warning("Local engine registry / pool failed: %s", e)
 
     local_pool = None
-    # Only start legacy local_pool if no real engines available
     has_real_engine = any(e.engine_id != "mock" for e in executor.list_engines())
     if not has_real_engine:
         local_pool = get_local_pool()
@@ -234,12 +354,20 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("Real engines available, skipping local_pool mock worker")
 
-    logger.info("kais-gold-team V6.0 started (engines: %s)", [e.engine_id for e in executor.list_engines()])
+    logger.info("kais-gold-team V6.0 started\n%s", _format_registration_summary(executor))
     yield
     # Shutdown
     await executor.stop()
     if local_pool:
         await local_pool.stop()
+    # Kill unified TTS subprocess if running
+    if tts_unified_process and tts_unified_process.returncode is None:
+        tts_unified_process.terminate()
+        try:
+            await asyncio.wait_for(tts_unified_process.wait(), timeout=10)
+        except asyncio.TimeoutError:
+            tts_unified_process.kill()
+        logger.info("Unified TTS server subprocess stopped")
     # Unload all engines from GPU
     try:
         pool = get_engine_pool()
