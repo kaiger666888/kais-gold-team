@@ -348,14 +348,26 @@ class KimodoEngine(BaseEngine):
                 if isinstance(root_positions, np.ndarray):
                     root_positions = torch.from_numpy(root_positions)
 
+                skeleton = self._resolve_skeleton()
+                # standard_tpose=False requires global_rot_offsets + bvh_neutral_joints
+                # (SOMA-only assets). Fall back to standard T-pose for SMPLX etc.
+                standard_tpose = not (
+                    hasattr(skeleton, "global_rot_offsets")
+                    and hasattr(skeleton, "bvh_neutral_joints")
+                )
+
                 save_motion_bvh(
                     bvh_path,
                     local_rot_mats,
                     root_positions,
-                    skeleton=self._resolve_skeleton(),
+                    skeleton=skeleton,
                     fps=fps,
+                    standard_tpose=standard_tpose,
                 )
-                logger.info("Kimodo BVH exported to %s", bvh_path)
+                logger.info(
+                    "Kimodo BVH exported to %s (standard_tpose=%s)",
+                    bvh_path, standard_tpose,
+                )
             except Exception as e:
                 logger.error("Kimodo BVH export failed (NPZ still saved): %s", e)
                 bvh_path = None
