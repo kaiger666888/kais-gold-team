@@ -33,15 +33,17 @@ CLOUD_PROVIDERS = {
     "jimeng": {
         "name": "即梦 (Jimeng)",
         "available": True,
-        "supported_types": ["image_draw", "image_refine", "video_final"],
+        # video_final removed — use LTX-2.3 LiconMSR via ComfyUI :8188 for video
+        "supported_types": ["image_draw", "image_refine"],
         "engine_class": "src.v6.engines.cloud_jimeng.JimengEngine",
         "env_required": ["JIMENG_API_KEY", "JIMENG_SESSION_ID"],  # either one
     },
     "seedance": {
         "name": "Seedance",
-        "available": True,
+        # Disabled — video now routes to LTX-2.3 LiconMSR via ComfyUI :8188
+        "available": False,
         "supported_types": ["video_final", "video_preview"],
-        "engine_class": "src.v6.engines.cloud_seedance.SeedanceEngine",
+        "engine_class": None,
         "env_required": ["JIMENG_API_KEY", "JIMENG_SESSION_ID"],  # same as jimeng
     },
     "runway": {
@@ -98,8 +100,11 @@ class CloudPool:
         """Pick the best cloud engine for the task type."""
         task_type = task.type.value if hasattr(task.type, 'value') else str(task.type)
 
-        # Priority: jimeng (most supported) > kling > seedance
-        priority = ["jimeng", "kling", "seedance"]
+        # Priority for IMAGE tasks: jimeng (best image quality) > kling.
+        # VIDEO tasks are NOT routed here on purpose — they go to the
+        # local ComfyUI / LTX-2.3 LiconMSR engine. seedance was removed
+        # (it shared jimeng's session and was only used for video).
+        priority = ["jimeng", "kling"]
         for pid in priority:
             engine = self._engines.get(pid)
             if engine and engine.is_configured:

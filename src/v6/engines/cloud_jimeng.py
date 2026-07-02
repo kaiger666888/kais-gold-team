@@ -25,8 +25,9 @@ class JimengEngine(BaseCloudEngine):
     """
 
     provider = "jimeng"
-    _supported_types = ["image_draw", "image_refine", "video_final"]
-    _default_models = ["jimeng-5.0", "jimeng-video-3.5-pro", "jimeng-video-seedance-2.0-fast"]
+    # video_final removed — use LTX-2.3 LiconMSR via ComfyUI :8188 for video
+    _supported_types = ["image_draw", "image_refine"]
+    _default_models = ["jimeng-5.0"]
     _default_base_url = "http://jimeng-free-api:5100"
 
     def __init__(self) -> None:
@@ -39,19 +40,16 @@ class JimengEngine(BaseCloudEngine):
                        width: int, height: int,
                        workflow: dict, params: dict) -> dict:
         if task_type in ("video_final", "video_preview"):
-            return {
-                "model": params.get("model", "jimeng-video-3.5-pro"),
-                "prompt": prompt,
-                "ratio": self._aspect_ratio(width, height),
-                "duration": params.get("duration", 5),
-            }
-        else:
-            return {
-                "model": params.get("model", "jimeng-5.0"),
-                "prompt": prompt,
-                "ratio": self._aspect_ratio(width, height),
-                "resolution": params.get("resolution", "2k"),
-            }
+            raise ValueError(
+                "Jimeng video is disabled. Use LTX-2.3 LiconMSR via ComfyUI "
+                ":8188 for video generation."
+            )
+        return {
+            "model": params.get("model", "jimeng-5.0"),
+            "prompt": prompt,
+            "ratio": self._aspect_ratio(width, height),
+            "resolution": params.get("resolution", "2k"),
+        }
 
     @staticmethod
     def _aspect_ratio(w: int, h: int) -> str:
