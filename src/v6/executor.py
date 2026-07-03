@@ -152,6 +152,22 @@ class TaskExecutor:
                         reference_audio=task.params.get("reference_audio", ""),
                     )
                     logger.info("Auto-built TTS workflow for task %s (lang=%s, track=%s)", task.task_id, lang, track)
+                elif task.type == TaskType.MOTION_GENERATE:
+                    workflow = {
+                        "prompt": task.params.get("prompt", ""),
+                        "duration_sec": float(task.params.get("duration_sec", 5.0)),
+                        "num_samples": int(task.params.get("num_samples", 1)),
+                        "num_denoising_steps": int(task.params.get("num_denoising_steps", 100)),
+                    }
+                    # Pass through all optional Kimodo params if present
+                    for opt_key in ("heading_angle_deg", "cfg_weight", "cfg_type",
+                                    "multi_prompt", "root_margin", "output_format"):
+                        val = task.params.get(opt_key)
+                        if val is not None:
+                            workflow[opt_key] = val
+                    logger.info("Auto-built Kimodo motion workflow for task %s (dur=%.1fs, heading=%s)",
+                                task.task_id, workflow["duration_sec"],
+                                workflow.get("heading_angle_deg", "default"))
                 elif task.type == TaskType.IMAGE_TO_3D:
                     extra = task.params.get("extra", {})
                     extra_engine = extra.get("engine", "")
@@ -795,12 +811,17 @@ class TaskExecutor:
         for a in artifacts:
             url = a.get("url", "")
             a_type = a.get("type", "")
+            a_format = a.get("format", "")
             if a_type == "video" and not video:
                 video = url
             elif a_type == "image" and not image:
                 image = url
             elif a_type == "audio" and not audio:
                 audio = url
+            elif a_type == "motion" and a_format == "bvh" and not image:
+                # BVH motion files — expose path via image field (poseVideo pipeline
+                # reads it as a file path, not a displayable image)
+                image = a.get("path", url)
 
         # Use first image as thumbnail if not set
         if not thumbnail and image:
