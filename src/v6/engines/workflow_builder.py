@@ -378,6 +378,7 @@ def build_tts_workflow(
     task_id: str = "",
     language: str = "auto",
     reference_audio: str = "",
+    prompt_text: str = "",
 ) -> dict[str, Any]:
     """Build a TTS workflow dict for the TTSTracker.
 
@@ -392,6 +393,9 @@ def build_tts_workflow(
         output_path: Explicit output file path.
         task_id: Used for auto-generating output path.
         reference_audio: Optional reference audio for voice cloning.
+        prompt_text: Transcript text of the reference audio (required for
+            CosyVoice zero-shot cloning — the model needs the text aligned
+            to the reference audio to extract voice identity).
 
     Returns:
         Dict with TTS parameters.
@@ -409,6 +413,7 @@ def build_tts_workflow(
         "output_path": output_path,
         "language": language,
         "reference_audio": reference_audio,
+        "prompt_text": prompt_text,
         "track": backend if backend in ("zh", "en", "bilingual", "gpt_sovits", "chatterbox", "cosyvoice") else "",
     }
 

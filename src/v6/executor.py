@@ -150,6 +150,7 @@ class TaskExecutor:
                         language=lang,
                         task_id=task.task_id,
                         reference_audio=task.params.get("reference_audio", ""),
+                        prompt_text=task.params.get("prompt_text", ""),
                     )
                     logger.info("Auto-built TTS workflow for task %s (lang=%s, track=%s)", task.task_id, lang, track)
                 elif task.type == TaskType.MOTION_GENERATE:
