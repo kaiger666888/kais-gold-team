@@ -102,15 +102,26 @@ def start_native_api(gpt_dir: str, native_port: int):
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
 
     env = os.environ.copy()
-    env["CUDA_VISIBLE_DEVICES"] = "1"  # 3060Ti
+    env["CUDA_VISIBLE_DEVICES"] = "0"  # 3090 (CUDA index 0 = physical 3090)
+    env["NLTK_DATA"] = "/home/kai/nltk_data"
+    env["HF_HUB_OFFLINE"] = "1"
+    env["TRANSFORMERS_OFFLINE"] = "1"
+    env["PYTHONUNBUFFERED"] = "1"
 
-    logger.info("Starting GPT-SoVITS api_v2.py (port=%d, config=%s)", native_port, config_path)
+    # Use GPT-SoVITS venv python
+    gsv_venv_python = os.path.join(gpt_dir, ".venv", "bin", "python")
+    if os.path.exists(gsv_venv_python):
+        python_exe = gsv_venv_python
+    else:
+        python_exe = sys.executable
+
+    logger.info("Starting GPT-SoVITS api_v2.py (port=%d, config=%s, python=%s)", native_port, config_path, python_exe)
     logger.info("Native log: %s", log_path)
 
     with open(log_path, "a") as lf:
         _native_process = subprocess.Popen(
             [
-                sys.executable, api_script,
+                python_exe, api_script,
                 "-a", "127.0.0.1",
                 "-p", str(native_port),
                 "-c", config_path,
@@ -128,17 +139,20 @@ def start_native_api(gpt_dir: str, native_port: int):
 
 def check_native_health() -> bool:
     """Check if native api_v2 is responding."""
+    import urllib.request
+    import urllib.error
     try:
-        import urllib.request
         req = urllib.request.Request(f"http://127.0.0.1:{_native_port}/tts?text=test&text_lang=zh&ref_audio_path=test.wav&prompt_lang=zh", method="GET")
         try:
             urllib.request.urlopen(req, timeout=2)
-        except Exception:
-            # Even a 400 means the server is running (just invalid params)
-            return True
-    except urllib.error.URLError:
+        except urllib.error.HTTPError as e:
+            # 400 means the server is running (just invalid params)
+            if e.code >= 400:
+                return True
+            return False
+        return True
+    except (urllib.error.URLError, OSError, ConnectionError):
         return False
-    return True
 
 
 @app.on_event("startup")

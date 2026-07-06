@@ -14,8 +14,9 @@ COPY src/ ./src/
 COPY scripts/ ./scripts/
 COPY engines/ ./engines/
 
-RUN groupadd -r kais && useradd -r -g kais kais && \
-    chown -R kais:kais /app
+RUN groupadd -r kais && useradd -r -g kais -m -d /home/kais kais && \
+    mkdir -p /home/kais/.cache && \
+    chown -R kais:kais /app /home/kais
 USER kais
 
 ENV PORT=8002

@@ -9,7 +9,7 @@ from typing import Any, Optional
 
 import httpx
 
-from src.v6.engines.base import BaseEngine, EngineCapabilities, EngineStatus
+from src.v6.engines.base import BackendType, BaseEngine, EngineCapabilities, EngineStatus
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +55,10 @@ class BaseCloudEngine(BaseEngine):
         self._jobs: dict[str, dict[str, Any]] = {}  # job_id → state
         self._client: Optional[httpx.AsyncClient] = None
         self._started = False
+
+    @property
+    def backend_type(self) -> BackendType:
+        return BackendType.CLOUD
 
     @property
     def is_configured(self) -> bool:

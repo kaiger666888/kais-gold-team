@@ -25,7 +25,7 @@ def _extract_comfyui_error(messages) -> str:
                     return str(exc)
     return json.dumps(messages, ensure_ascii=False)[:500]
 
-from src.v6.engines.base import BaseEngine, EngineCapabilities, EngineStatus
+from src.v6.engines.base import BackendType, BaseEngine, EngineCapabilities, EngineStatus
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +124,10 @@ class ComfyUIEngine(BaseEngine):
             vram_available_mb=self._profile["vram_available_mb"],
             models=self._profile["models"],
         )
+
+    @property
+    def backend_type(self) -> BackendType:
+        return BackendType.COMFYUI
 
     async def start(self) -> None:
         self._http = httpx.AsyncClient(

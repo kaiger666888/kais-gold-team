@@ -25,7 +25,7 @@ import time
 import uuid
 from typing import Any, Optional
 
-from src.v6.engines.base import BaseEngine, EngineCapabilities, EngineStatus
+from src.v6.engines.base import BackendType, BaseEngine, EngineCapabilities, EngineStatus
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +105,10 @@ class Hunyuan3DMvEngine(BaseEngine):
             vram_available_mb=24000,
             models=["Hunyuan3D-2mv"],
         )
+
+    @property
+    def backend_type(self) -> BackendType:
+        return BackendType.SUBPROCESS
 
     # ── lifecycle ─────────────────────────────────────────────────────────
 

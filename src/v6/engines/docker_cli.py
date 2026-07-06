@@ -8,7 +8,7 @@ from typing import Any
 
 from src.v6.config.engine_schema import EngineConfig
 from src.v6.docker.container_manager import ContainerManager
-from src.v6.engines.base import BaseEngine, EngineCapabilities, EngineStatus
+from src.v6.engines.base import BackendType, BaseEngine, EngineCapabilities, EngineStatus
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +34,10 @@ class DockerCLIEngine(BaseEngine):
             supported_types=self._config.task_types,
             vram_total_mb=self._config.vram_mb,
         )
+
+    @property
+    def backend_type(self) -> BackendType:
+        return BackendType.DOCKER
 
     async def submit(self, workflow: dict[str, Any], params: dict[str, Any] | None = None) -> str:
         """Execute the CLI command in a Docker container. Blocks until complete."""

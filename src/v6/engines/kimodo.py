@@ -343,10 +343,13 @@ class KimodoEngine(BaseEngine):
 
                 local_rot_mats = output["local_rot_mats"]
                 root_positions = output["root_positions"]
-                if isinstance(local_rot_mats, np.ndarray):
-                    local_rot_mats = torch.from_numpy(local_rot_mats)
-                if isinstance(root_positions, np.ndarray):
-                    root_positions = torch.from_numpy(root_positions)
+                # Ensure torch tensors on CPU (model may return GPU tensors or numpy)
+                if not isinstance(local_rot_mats, torch.Tensor):
+                    local_rot_mats = torch.from_numpy(np.asarray(local_rot_mats))
+                local_rot_mats = local_rot_mats.detach().cpu()
+                if not isinstance(root_positions, torch.Tensor):
+                    root_positions = torch.from_numpy(np.asarray(root_positions))
+                root_positions = root_positions.detach().cpu()
 
                 skeleton = self._resolve_skeleton()
                 # standard_tpose=False requires global_rot_offsets + bvh_neutral_joints

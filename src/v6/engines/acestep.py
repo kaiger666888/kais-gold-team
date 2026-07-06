@@ -1,14 +1,18 @@
-"""ACE-Step Engine — runs ACE-Step music generation internally via subprocess API server.
+"""ACE-Step Engine — dual-mode music generation via subprocess or external container API.
 
-Like ComfyUIEngine, this starts a persistent ACE-Step API server as a background
-process within the gold-team container and communicates via HTTP. This avoids
-the need for a separate Docker container while keeping the model loaded in VRAM.
+Supports two modes:
+    - **External mode**: When ACESTEP_API_HOST points to a non-local address (e.g.
+      "kais-acestep"), the engine connects to an already-running external container
+      via HTTP, skipping subprocess launch and local directory checks.
+    - **Subprocess mode**: When ACESTEP_API_HOST is localhost/127.0.0.1/::1, the
+      engine launches ``python -m acestep.api_server`` as a background process within
+      the gold-team container (original behavior).
 
 Lifecycle:
-    start()  → launches ``python -m acestep.api_server`` subprocess
+    start()  → external: health-check remote API; subprocess: launch subprocess
     submit() → POST /release_task with params
     poll()   → POST /query_result for status
-    stop()   → terminates the subprocess
+    stop()   → terminates the subprocess (no-op in external mode)
 """
 from __future__ import annotations
 
@@ -21,7 +25,7 @@ from typing import Any
 
 import httpx
 
-from src.v6.engines.base import BaseEngine, EngineCapabilities, EngineStatus
+from src.v6.engines.base import BackendType, BaseEngine, EngineCapabilities, EngineStatus
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +50,18 @@ _TASK_TYPE_MAP = {
     "music_lego": "lego",
     "music_complete": "complete",
 }
+
+# Hostnames that indicate local/subprocess mode
+_LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def _is_external_host(host: str) -> bool:
+    """Return True if *host* points to an external service (not localhost).
+
+    Used to decide whether to launch a local subprocess or connect to an
+    already-running external container (e.g. ``kais-acestep`` in Docker).
+    """
+    return host.lower() not in _LOCAL_HOSTS
 
 
 class ACEStepJob:
@@ -77,6 +93,15 @@ class ACEStepEngine(BaseEngine):
         return "acestep-internal"
 
     @property
+    def backend_type(self) -> BackendType:
+        # ACE-Step runs in a dedicated sidecar container (kais-acestep) and is
+        # polled via HTTP. Even in localhost/subprocess fallback mode it spawns
+        # an isolated process rather than using the ComfyUI node graph or a
+        # cloud API — so DOCKER (sidecar / external-process) is the correct
+        # classification, never MOCK. v1.4 FIX-04.
+        return BackendType.DOCKER
+
+    @property
     def capabilities(self) -> EngineCapabilities:
         return EngineCapabilities(
             supported_types=["audio_generate", "music_generation", "music", "music_cover",
@@ -88,6 +113,26 @@ class ACEStepEngine(BaseEngine):
         )
 
     async def start(self) -> None:
+        # ---- Dual-mode detection ----
+        if _is_external_host(ACESTEP_HOST):
+            # External container mode: connect to already-running API
+            logger.info("ACE-Step external mode detected (host=%s), connecting to external API", ACESTEP_HOST)
+            # Health-check the external URL (15 retries x 2s = 30s timeout)
+            for i in range(15):
+                await asyncio.sleep(2)
+                try:
+                    async with httpx.AsyncClient(timeout=5) as client:
+                        resp = await client.get(f"{self._base_url}/health")
+                        if resp.status_code == 200:
+                            self._ready = True
+                            logger.info("ACE-Step external API ready after %ds", (i + 1) * 2)
+                            return
+                except Exception:
+                    pass
+            logger.warning("ACE-Step external API did not become ready within 30s (host=%s)", ACESTEP_HOST)
+            return
+
+        # ---- Localhost / subprocess mode (original behavior) ----
         if not os.path.isdir(ACESTEP_ROOT) or ACESTEP_ROOT == "/nonexistent":
             logger.warning("ACE-Step root not found at %s — engine disabled", ACESTEP_ROOT)
             return
@@ -265,7 +310,8 @@ class ACEStepEngine(BaseEngine):
                     return
                 elif status == 2:
                     job.status = "failed"
-                    job.error = result.get("error", "ACE-Step job failed")
+                    failed_result = jobs_data[0] if isinstance(jobs_data[0], dict) else {}
+                    job.error = failed_result.get("error", "ACE-Step job failed")
                     return
                 else:
                     job.progress = min(job.progress + 5, 95.0)

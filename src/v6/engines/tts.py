@@ -171,10 +171,10 @@ class CosyVoiceTrack(BaseTrack):
     def _load_model(self) -> None:
         sys.path.insert(0, COSYVOICE_ROOT)
         sys.path.insert(0, os.path.join(COSYVOICE_ROOT, "third_party", "Matcha-TTS"))
-        from cosyvoice.cli.cosyvoice import AutoModel
+        from cosyvoice.cli.cosyvoice import CosyVoice3
 
         model_dir = os.environ.get("COSYVOICE_MODEL_DIR", os.path.join(COSYVOICE_ROOT, "pretrained_models", "CosyVoice-300M"))
-        self._model = AutoModel(model_dir=model_dir)
+        self._model = CosyVoice3(model_dir=model_dir)
         logger.info("CosyVoice-300M loaded")
 
     def _unload_model(self) -> None:

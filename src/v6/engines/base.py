@@ -15,6 +15,19 @@ class EngineStatus(str, enum.Enum):
     ERROR = "error"
 
 
+class BackendType(str, enum.Enum):
+    """Engine backend classification.
+
+    Every engine reports its backend type so that registration grouping
+    and the /api/v1/engines endpoint can display organized listings.
+    """
+    COMFYUI = "comfyui"
+    SUBPROCESS = "subprocess"
+    CLOUD = "cloud"
+    DOCKER = "docker"
+    MOCK = "mock"
+
+
 @dataclass
 class EngineCapabilities:
     """Describes what an engine can do."""
@@ -51,6 +64,11 @@ class BaseEngine(abc.ABC):
     @abc.abstractmethod
     def capabilities(self) -> EngineCapabilities:
         """Engine capability descriptor."""
+
+    @property
+    def backend_type(self) -> BackendType:
+        """Engine backend type. Override in subclasses to declare the correct type."""
+        return BackendType.MOCK
 
     @abc.abstractmethod
     async def submit(self, workflow: dict[str, Any], params: dict[str, Any] | None = None) -> str:

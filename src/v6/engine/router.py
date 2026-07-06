@@ -25,6 +25,7 @@ DEDICATED_ENGINES: dict[TaskType, str] = {
     TaskType.TTS_ZH: "tts-tracker",
     TaskType.TTS_EN: "tts-tracker",
     TaskType.TTS_BILINGUAL: "tts-tracker",
+    TaskType.MOTION_GENERATE: "kimodo-local",
 }
 
 # ─── Light task types routed to auxiliary ───
@@ -55,6 +56,7 @@ VRAM_ESTIMATES: dict[TaskType, float] = {
     TaskType.IMAGE_DRAW_IPADAPTER: 16.0,  # FLUX + IP-Adapter
     TaskType.CONTROLNET_DEPTH: 18.0,     # FLUX + ControlNet
     TaskType.WAN_I2V: 20.0,              # Wan 2.1 14B
+    TaskType.MOTION_GENERATE: 17.0,        # NVIDIA Kimodo (full load; ~3GB with text encoder on CPU)
 }
 
 # Auxiliary VRAM cap — only accept tasks needing < 5 GB
@@ -162,6 +164,11 @@ class EngineRouter:
 
     def _pick_local_engine_id(self, task: GenerationTask) -> str:
         """Pick the best local engine ID for the task type."""
+        # TRELLIS bypass: IMAGE_TO_3D + trellis/flux_trellis goes to comfyui-primary
+        if task.type == TaskType.IMAGE_TO_3D:
+            extra = task.params.get("extra", {})
+            if extra.get("engine") == "trellis" or extra.get("mode") == "flux_trellis":
+                return "comfyui-primary"
         # Dedicated engine mappings take priority
         if task.type in DEDICATED_ENGINES:
             return DEDICATED_ENGINES[task.type]

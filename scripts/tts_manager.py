@@ -36,11 +36,12 @@ TRACKS = {
         "name": "GPT-SoVITS",
         "port": 9880,
         "script": os.path.join(REPO_ROOT, "scripts", "tts_gpt_sovits_server.py"),
-        "native_api": "~/GPT-SoVITS/api_v2.py",
         "python": os.path.expanduser("~/GPT-SoVITS/.venv/bin/python"),
-        "env": {"CUDA_VISIBLE_DEVICES": "1"},
+        "env": {"CUDA_VISIBLE_DEVICES": "0", "NLTK_DATA": "/home/kai/nltk_data", "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"},
         "vram": 4.0,
-        "gpu": "3060Ti",
+        "gpu": "3090",
+        "role": "voice_clone",  # 角色/IP 音色克隆兜底
+        "extra_args": ["--native-port", "9980", "--gpt-sovits-dir", os.path.expanduser("~/GPT-SoVITS")],
     },
     "en": {
         "name": "Chatterbox-Turbo",
@@ -50,6 +51,7 @@ TRACKS = {
         "env": {"CUDA_VISIBLE_DEVICES": "1"},
         "vram": 2.0,
         "gpu": "3060Ti",
+        "role": "en_primary",  # 英文主声道
     },
     "bilingual": {
         "name": "CosyVoice-3.0",
@@ -62,6 +64,7 @@ TRACKS = {
         },
         "vram": 6.0,
         "gpu": "3090",
+        "role": "zh_primary",  # 中文主声道（自然度优先）
     },
 }
 
@@ -127,10 +130,15 @@ def start_track(track: str) -> bool:
     print(f"     Python: {python_bin}")
     print(f"     Log: {log}")
 
+    cmd = [python_bin, script, "--port", str(config["port"]), "--host", "0.0.0.0"]
+    if "extra_args" in config:
+        cmd.extend(config["extra_args"])
+
     with open(log, "a") as lf:
         lf.write(f"\n=== TTS Manager starting {config['name']} at {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")
+        lf.write(f"Command: {' '.join(cmd)}\n")
         proc = subprocess.Popen(
-            [python_bin, script, "--port", str(config["port"]), "--host", "0.0.0.0"],
+            cmd,
             stdout=lf,
             stderr=lf,
             env=env,
