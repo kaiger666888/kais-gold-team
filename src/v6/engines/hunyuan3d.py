@@ -72,9 +72,14 @@ class Hunyuan3DEngine(BaseEngine):
         self,
         output_root: str = OUTPUT_ROOT,
         model_dir: str = DEFAULT_MODEL_DIR,
+        paint_model_dir: str = "",
     ) -> None:
         self._output_root = output_root
         self._model_dir = model_dir
+        self._paint_model_dir = paint_model_dir or os.environ.get(
+            "HUNYUAN3D_PAINT_MODEL_DIR",
+            "/data/models/Hunyuan3D-2.1",
+        )
         self._jobs: dict[str, Hunyuan3DJob] = {}
         self._script_path = os.path.abspath(SCRIPT_PATH)
         self._python = os.environ.get("KAIS_HUNYUAN3D_PYTHON", "python3")
@@ -93,10 +98,10 @@ class Hunyuan3DEngine(BaseEngine):
     def capabilities(self) -> EngineCapabilities:
         return EngineCapabilities(
             supported_types=["image_to_3d"],
-            max_duration_sec=600.0,
+            max_duration_sec=1200.0,  # shape ~70s + texture ~480s + load ~30s
             vram_total_mb=24000,
             vram_available_mb=24000,
-            models=["Hunyuan3D-2.1"],
+            models=["Hunyuan3D-2mini", "Hunyuan3D-2.1"],
         )
 
     @property
@@ -125,12 +130,17 @@ class Hunyuan3DEngine(BaseEngine):
         Workflow keys:
             input_image (str, required): Path to source image.
             output_path (str, optional): GLB output path. Auto-generated if empty.
-            model (str, optional): "mini" or "full" (default: full).
+            model (str, optional): "mini" or "full" (default: mini).
+            texture_mode (str, optional): "none" (geometry only) or "texture"
+                (Hunyuan3D-2.0 multiview PBR paint). Default: none.
             device (str, optional): e.g. "cuda:0" (default). Mapped to
                 CUDA_VISIBLE_DEVICES before subprocess import.
             steps (int, optional): Inference steps (default 50).
             seed (int, optional): Reproducibility seed.
-            model_dir (str, optional): Override model checkpoint directory.
+            model_dir (str, optional): Override shape model checkpoint directory.
+            paint_model_dir (str, optional): Override PBR paint model directory.
+            render_size (int, optional): PBR render resolution (default 1024).
+            texture_size (int, optional): PBR texture resolution (default 1024).
         """
         job_id = str(uuid.uuid4())[:12]
         params = params or {}
@@ -144,12 +154,16 @@ class Hunyuan3DEngine(BaseEngine):
         if not output_path:
             output_path = os.path.join(self._output_root, task_id, "model.glb")
 
-        model_variant = workflow.get("model", "full")
+        model_variant = workflow.get("model", "mini")
+        texture_mode = workflow.get("texture_mode", "none")
         device = workflow.get("device", "cuda:0")
         steps = int(workflow.get("steps", 50))
         seed = workflow.get("seed")
         model_dir = workflow.get("model_dir", self._model_dir)
+        paint_model_dir = workflow.get("paint_model_dir", self._paint_model_dir)
         subfolder = workflow.get("subfolder")
+        render_size = int(workflow.get("render_size", 1024))
+        texture_size = int(workflow.get("texture_size", 1024))
 
         job = Hunyuan3DJob(
             job_id=job_id,
@@ -157,6 +171,7 @@ class Hunyuan3DEngine(BaseEngine):
                 "input_image": input_image,
                 "output_path": output_path,
                 "model": model_variant,
+                "texture_mode": texture_mode,
                 "device": device,
                 "steps": steps,
                 "model_dir": model_dir,
@@ -171,19 +186,31 @@ class Hunyuan3DEngine(BaseEngine):
             "--input", input_image,
             "--output", output_path,
             "--model", model_variant,
+            "--texture-mode", texture_mode,
             "--device", device,
             "--steps", str(steps),
             "--model-dir", model_dir,
+            "--paint-model-dir", paint_model_dir,
+            "--render-size", str(render_size),
+            "--texture-size", str(texture_size),
         ]
         if subfolder:
             cmd.extend(["--subfolder", subfolder])
         if seed is not None:
             cmd.extend(["--seed", str(seed)])
 
-        logger.info(
-            "Hunyuan3D job %s: submitting (model=%s, device=%s, steps=%d, input=%s)",
-            job_id, model_variant, device, steps, input_image,
-        )
+        # Texture mode increases estimated time significantly
+        if texture_mode == "texture":
+            logger.info(
+                "Hunyuan3D job %s: submitting (model=%s, texture=%s, device=%s, steps=%d, input=%s) "
+                "— texture mode adds ~8min",
+                job_id, model_variant, texture_mode, device, steps, input_image,
+            )
+        else:
+            logger.info(
+                "Hunyuan3D job %s: submitting (model=%s, texture=%s, device=%s, steps=%d, input=%s)",
+                job_id, model_variant, texture_mode, device, steps, input_image,
+            )
 
         try:
             process = await asyncio.create_subprocess_exec(
@@ -257,10 +284,13 @@ class Hunyuan3DEngine(BaseEngine):
                 job.faces = int(result.get("faces", 0))
                 job.elapsed_load_sec = float(result.get("elapsed_load_sec", 0.0))
                 job.elapsed_inference_sec = float(result.get("elapsed_inference_sec", 0.0))
+                tex_sec = float(result.get("elapsed_texture_sec", 0.0))
+                tex_mode = result.get("texture_mode", "none")
                 logger.info(
-                    "Hunyuan3D job %s completed (load=%.1fs, infer=%.1fs, verts=%d, faces=%d, out=%s)",
+                    "Hunyuan3D job %s completed "
+                    "(load=%.1fs, infer=%.1fs, tex=%.1fs[%s], verts=%d, faces=%d, out=%s)",
                     job.job_id, job.elapsed_load_sec, job.elapsed_inference_sec,
-                    job.vertices, job.faces, job.output_path,
+                    tex_sec, tex_mode, job.vertices, job.faces, job.output_path,
                 )
             else:
                 err_text = stderr_buf.decode(errors="replace").strip()
@@ -326,11 +356,17 @@ class Hunyuan3DEngine(BaseEngine):
     async def health(self) -> dict[str, Any]:
         script_ok = os.path.isfile(self._script_path)
         model_ok = os.path.isdir(self._model_dir)
-        # Quick check: do the expected subdirs exist?
+        paint_ok = os.path.isdir(self._paint_model_dir)
+        # Check shape model subdirs
         sub_ok = all(
             os.path.isdir(os.path.join(self._model_dir, s))
-            for s in ("hy3dshape", "hunyuan3d-dit-v2-1", "hunyuan3d-vae-v2-1")
+            for s in ("hy3dshape", "hunyuan3d-dit-v2-1")
         ) if model_ok else False
+        # Check paint model (hunyuan3d-paintpbr-v2-1 or hunyuan3d-paint-v2-0)
+        paint_sub_ok = (
+            os.path.isdir(os.path.join(self._paint_model_dir, "hunyuan3d-paintpbr-v2-1"))
+            or os.path.isdir(os.path.join(self._paint_model_dir, "hunyuan3d-paint-v2-0"))
+        ) if paint_ok else False
 
         available = script_ok and sub_ok
         status = EngineStatus.ONLINE if available else EngineStatus.OFFLINE
@@ -339,6 +375,10 @@ class Hunyuan3DEngine(BaseEngine):
             "available": available,
             "script_path": self._script_path,
             "model_dir": self._model_dir,
+            "paint_model_dir": self._paint_model_dir,
             "model_ok": model_ok,
             "subdirs_ok": sub_ok,
+            "paint_model_ok": paint_ok,
+            "paint_subdirs_ok": paint_sub_ok,
+            "texture_mode_available": paint_sub_ok,
         }

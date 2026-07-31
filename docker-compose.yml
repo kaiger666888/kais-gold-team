@@ -118,10 +118,17 @@ services:
       REDIS_URL: redis://redis:6379
       OUTPUT_DIR: /mnt/agents/output
       MODELS_DIR: /opt/kais/models
+      # Hunyuan3D model paths inside container
+      HUNYUAN3D_MODEL_DIR: /data/models/Hunyuan3D-2mini
+      HUNYUAN3D_PAINT_MODEL_DIR: /data/models/Hunyuan3D-2.1
+      KAIS_HUNYUAN3D_PYTHON: python
       # 云端引擎 API Keys 从 .env 注入
     volumes:
       - ${OUTPUT_DIR:-/mnt/agents/output}:/mnt/agents/output
       - ${MODELS_DIR:-/opt/kais/models}:/opt/kais/models:ro
+      # Hunyuan3D shape + PBR paint models (host /data/models → container /data/models)
+      - ${HUNYUAN3D_SHAPE_MODELS:-/data/models/Hunyuan3D-2mini}:/data/models/Hunyuan3D-2mini:ro
+      - ${HUNYUAN3D_PAINT_MODELS:-/data/models/Hunyuan3D-2.1}:/data/models/Hunyuan3D-2.1:ro
     networks:
       - kais-net
     deploy:

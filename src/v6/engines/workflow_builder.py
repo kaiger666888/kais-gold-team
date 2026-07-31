@@ -421,11 +421,15 @@ def build_tts_workflow(
 def build_hunyuan3d_workflow(
     input_image: str,
     output_path: str = "",
-    model: str = "full",
+    model: str = "mini",
+    texture_mode: str = "none",
     device: str = "cuda:0",
     steps: int = 50,
     seed: int | None = None,
     model_dir: str = "",
+    paint_model_dir: str = "",
+    render_size: int = 1024,
+    texture_size: int = 1024,
     task_id: str = "",
 ) -> dict[str, Any]:
     """Build a Hunyuan3D-2 parameter dict for Hunyuan3DEngine.submit().
@@ -437,11 +441,15 @@ def build_hunyuan3d_workflow(
     Args:
         input_image: Absolute path to source image (PNG/JPG).
         output_path: Output GLB path. Auto-generated under KAIS_OUTPUT_ROOT if empty.
-        model: "mini" or "full" (default full = Hunyuan3D-2.1).
+        model: "mini" or "full" (default mini = Hunyuan3D-2mini, recommended).
+        texture_mode: "none" (geometry only) or "texture" (PBR multiview paint).
         device: Torch device (cuda:0). Remapped to CUDA_VISIBLE_DEVICES in script.
-        steps: Inference steps (default 50; ~75s on RTX 3090 for full model).
+        steps: Inference steps (default 50; ~70s on RTX 3090 for mini model).
         seed: Reproducibility seed. Pipeline default if None.
-        model_dir: Override model checkpoint directory.
+        model_dir: Override shape model checkpoint directory.
+        paint_model_dir: Override PBR paint model directory.
+        render_size: PBR texture render resolution (default 1024; 512 for low VRAM).
+        texture_size: PBR texture output resolution (default 1024; 512 for low VRAM).
         task_id: Used for default output path naming.
 
     Returns:
@@ -456,13 +464,18 @@ def build_hunyuan3d_workflow(
         "input_image": input_image,
         "output_path": output_path,
         "model": model,
+        "texture_mode": texture_mode,
         "device": device,
         "steps": steps,
+        "render_size": render_size,
+        "texture_size": texture_size,
     }
     if seed is not None:
         workflow["seed"] = seed
     if model_dir:
         workflow["model_dir"] = model_dir
+    if paint_model_dir:
+        workflow["paint_model_dir"] = paint_model_dir
     return workflow
 
 

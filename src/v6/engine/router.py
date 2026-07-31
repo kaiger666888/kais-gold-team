@@ -50,7 +50,7 @@ VRAM_ESTIMATES: dict[TaskType, float] = {
     TaskType.SFX: 2.0,
     TaskType.UPSCALE: 2.0,
     TaskType.FACE_RESTORE: 1.5,
-    TaskType.IMAGE_TO_3D: 10.0,
+    TaskType.IMAGE_TO_3D: 10.0,       # Hunyuan3D-2mini shape (~4.4GB) + PBR texture (~5GB)
     TaskType.IMAGE_TO_3D_MV: 12.0,      # Hunyuan3D-2mv (multiview, heavier)
     TaskType.IMAGE_PULID: 16.0,          # FLUX + PuLID
     TaskType.IMAGE_DRAW_IPADAPTER: 16.0,  # FLUX + IP-Adapter
