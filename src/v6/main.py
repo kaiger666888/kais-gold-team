@@ -19,6 +19,7 @@ from src.v6.engines.tts import TTSTracker
 from src.v6.engines.tts_http import TripleTrackTTSEngine
 from src.v6.engines.hunyuan3d import Hunyuan3DEngine
 from src.v6.engines.hunyuan3d_mv import Hunyuan3DMvEngine
+from src.v6.engines.color_grade import ColorGradeEngine
 from src.v6.gpu_monitor import get_gpu_vram_usage
 from src.v6.middleware.gpu_guard import GPUGuardMiddleware
 from src.v6.routers import tasks, engines, events, health
@@ -50,14 +51,6 @@ COMFYUI_PRIMARY_HOST = os.environ.get("COMFYUI_PRIMARY_HOST", "")
 COMFYUI_PRIMARY_PORT = int(os.environ.get("COMFYUI_PRIMARY_PORT", "8188"))
 COMFYUI_AUX_HOST = os.environ.get("COMFYUI_AUX_HOST", "")
 COMFYUI_AUX_PORT = int(os.environ.get("COMFYUI_AUX_PORT", "8189"))
-
-# ACE-Step music generation sidecar (v1.4 FIX-05: explicit registration)
-# Default to enabled when an external API host is configured (production compose
-# always sets ACESTEP_API_HOST=kais-acestep). Set ACESTEP_ENABLED=false to disable.
-ACESTEP_ENABLED = os.environ.get(
-    "ACESTEP_ENABLED",
-    "true" if os.environ.get("ACESTEP_API_HOST", "") else "false",
-).lower() in ("true", "1", "yes")
 
 
 def _format_registration_summary(executor) -> str:
@@ -161,36 +154,21 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Hunyuan3D-2mv engine init failed: %s", e)
 
-    # Register Kimodo motion generation engine (in-process, lazy-load)
+    # ── Color Grade engine (CPU-only ffmpeg + LUT) ─────────────────────
     try:
-        from src.v6.engines.kimodo import KimodoEngine
-        kimodo_engine = KimodoEngine()
-        await kimodo_engine.start()
-        executor.register_engine(kimodo_engine)
-        logger.info("Kimodo motion engine registered")
+        color_grade_engine = ColorGradeEngine()
+        await color_grade_engine.start()
+        executor.register_engine(color_grade_engine)
+        logger.info("Color Grade engine registered")
     except Exception as e:
-        logger.warning("Kimodo engine init failed: %s", e)
+        logger.warning("Color Grade engine init failed: %s", e)
 
     # ── Docker Backend ──────────────────────────────────────────────────
-    # Register ACE-Step music generation engine (sidecar container via HTTP).
-    # v1.4 FIX-05: explicit registration — previously relied on YAML registry
-    # fallback which silently missed it. Engine reports BackendType.DOCKER.
-    if ACESTEP_ENABLED:
-        try:
-            from src.v6.engines.acestep import ACEStepEngine
-            acestep_engine = ACEStepEngine()
-            await acestep_engine.start()
-            executor.register_engine(acestep_engine)
-            acestep_health = await acestep_engine.health()
-            if acestep_health.get("available"):
-                logger.info("ACE-Step engine registered (online) → %s",
-                            acestep_health.get("url", ""))
-            else:
-                logger.info("ACE-Step engine registered (offline — sidecar not running)")
-        except ImportError:
-            logger.warning("ACEStepEngine not available, skipping")
-        except Exception as e:
-            logger.warning("ACE-Step engine init failed: %s", e)
+    # NOTE: ACE-Step standalone engine removed in v1.5 (commit history).
+    # Music generation now runs entirely through ComfyUI workflows via the
+    # Node-layer routes (/api/v1/ace/generate → ComfyUI /prompt). The
+    # docker/gold-team/src/v6/engines/acestep.py module is deleted; this
+    # block no longer attempts to register an ACE-Step engine.
 
     # ── ComfyUI Backend ─────────────────────────────────────────────────
     # Register ComfyUI engine(s)
@@ -276,9 +254,9 @@ async def lifespan(app: FastAPI):
     try:
         from src.v6.engines.cloud_jimeng import JimengEngine
         from src.v6.engines.cloud_kling import KlingEngine
-        # SeedanceEngine removed — video disabled, use LTX-2.3 via ComfyUI
+        from src.v6.engines.cloud_seedance import SeedanceEngine
 
-        for cloud_cls in [JimengEngine, KlingEngine]:
+        for cloud_cls in [JimengEngine, KlingEngine, SeedanceEngine]:
             try:
                 cloud_engine = cloud_cls()
                 await cloud_engine.start()

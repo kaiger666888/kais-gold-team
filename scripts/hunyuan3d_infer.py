@@ -386,7 +386,12 @@ def _run_texture_painting(
         torch.cuda.empty_cache()
         from hy3dgen.texgen.utils.multiview_utils import Multiview_Diffusion_Net
         self.models["multiview_model"] = Multiview_Diffusion_Net(self.config)
-        self.models["delight_model"] = None
+
+        # No-op delight model (skip light removal to save VRAM)
+        class _NoOpDelight:
+            def __call__(self, image):
+                return image
+        self.models["delight_model"] = _NoOpDelight()
         print("[hunyuan3d-tex] models loaded (delight skipped)", file=sys.stderr)
 
     pipelines.Hunyuan3DPaintPipeline.load_models = patched_load_models
@@ -425,12 +430,30 @@ def _run_texture_painting(
     )
 
     print("[hunyuan3d-tex] painting textures...", file=sys.stderr)
+    import trimesh
     try:
-        paint_pipeline(
-            mesh_path=geo_path,
-            image_path=input_image,
-            output_mesh_path=output_path,
-        )
+        # Pipeline __call__(mesh, image) expects a trimesh object + image path
+        mesh = trimesh.load(geo_path, force='mesh')
+        print(f"[hunyuan3d-tex] loaded mesh: {len(mesh.vertices)} verts, {len(mesh.faces)} faces", file=sys.stderr)
+        textured_mesh = paint_pipeline(mesh, input_image)
+        # Debug: inspect returned mesh
+        print(f"[hunyuan3d-tex] result type: {type(textured_mesh).__name__}", file=sys.stderr)
+        print(f"[hunyuan3d-tex] result visual: {type(textured_mesh.visual).__name__}", file=sys.stderr)
+        if hasattr(textured_mesh.visual, 'uv') and textured_mesh.visual.uv is not None:
+            print(f"[hunyuan3d-tex] result UV: {textured_mesh.visual.uv.shape}", file=sys.stderr)
+        else:
+            print("[hunyuan3d-tex] result UV: None", file=sys.stderr)
+        if hasattr(textured_mesh.visual, 'image') and textured_mesh.visual.image:
+            print(f"[hunyuan3d-tex] result texture image: {textured_mesh.visual.image.size}", file=sys.stderr)
+        elif hasattr(textured_mesh.visual, 'material') and textured_mesh.visual.material:
+            mat = textured_mesh.visual.material
+            print(f"[hunyuan3d-tex] result material: {type(mat).__name__}", file=sys.stderr)
+            if hasattr(mat, 'image') and mat.image:
+                print(f"[hunyuan3d-tex] result mat image: {mat.image.size}", file=sys.stderr)
+        else:
+            print("[hunyuan3d-tex] result: no texture/material", file=sys.stderr)
+        # Export textured mesh to GLB
+        textured_mesh.export(output_path, file_type='glb')
         elapsed = _time.monotonic() - t0
         print(f"[hunyuan3d-tex] texture painting done in {elapsed:.1f}s", file=sys.stderr)
         return elapsed
@@ -457,11 +480,9 @@ def _run_texture_painting(
         except Exception:
             pass
 
-        paint_pipeline(
-            mesh_path=geo_path,
-            image_path=input_image,
-            output_mesh_path=output_path,
-        )
+        mesh = trimesh.load(geo_path, force='mesh')
+        textured_mesh = paint_pipeline(mesh, input_image)
+        textured_mesh.export(output_path, file_type='glb')
         elapsed = _time.monotonic() - t0
         print(
             f"[hunyuan3d-tex] texture painting done (fallback) in {elapsed:.1f}s",

@@ -16,16 +16,18 @@ logger = logging.getLogger(__name__)
 # ─── Dedicated engine mappings (type → engine_id) ───
 # These task types have specialized engines that should always be preferred
 # over the generic comfyui-primary fallback.
+# NOTE: MUSIC/SFX removed in v1.5 — gold-team no longer hosts music generation.
+# Music is now served by Node-layer routes (/api/v1/ace/generate → ComfyUI
+# /prompt). Sending MUSIC/SFX to gold-team results in task FAILED with a
+# redirect message (see src/v6/executor.py).
 DEDICATED_ENGINES: dict[TaskType, str] = {
     TaskType.IMAGE_TO_3D: "hunyuan3d-local",
     TaskType.IMAGE_TO_3D_MV: "hunyuan3d-mv-local",
-    TaskType.MUSIC: "acestep-internal",
-    TaskType.SFX: "acestep-internal",
     TaskType.TTS: "tts-tracker",
     TaskType.TTS_ZH: "tts-tracker",
     TaskType.TTS_EN: "tts-tracker",
     TaskType.TTS_BILINGUAL: "tts-tracker",
-    TaskType.MOTION_GENERATE: "kimodo-local",
+    TaskType.COLOR_GRADE: "color-grade",
 }
 
 # ─── Light task types routed to auxiliary ───
@@ -50,13 +52,13 @@ VRAM_ESTIMATES: dict[TaskType, float] = {
     TaskType.SFX: 2.0,
     TaskType.UPSCALE: 2.0,
     TaskType.FACE_RESTORE: 1.5,
-    TaskType.IMAGE_TO_3D: 10.0,       # Hunyuan3D-2mini shape (~4.4GB) + PBR texture (~5GB)
+    TaskType.IMAGE_TO_3D: 10.0,
     TaskType.IMAGE_TO_3D_MV: 12.0,      # Hunyuan3D-2mv (multiview, heavier)
     TaskType.IMAGE_PULID: 16.0,          # FLUX + PuLID
     TaskType.IMAGE_DRAW_IPADAPTER: 16.0,  # FLUX + IP-Adapter
     TaskType.CONTROLNET_DEPTH: 18.0,     # FLUX + ControlNet
     TaskType.WAN_I2V: 20.0,              # Wan 2.1 14B
-    TaskType.MOTION_GENERATE: 17.0,        # NVIDIA Kimodo (full load; ~3GB with text encoder on CPU)
+    TaskType.COLOR_GRADE: 0.0,           # CPU only — ffmpeg + LUT, no GPU VRAM
 }
 
 # Auxiliary VRAM cap — only accept tasks needing < 5 GB
@@ -177,12 +179,16 @@ class EngineRouter:
         return "comfyui-primary"
 
     def _pick_cloud_engine_id(self, task: GenerationTask) -> str:
-        """Pick the best cloud engine ID for the task type."""
+        """Pick the best cloud engine ID for the task type.
+
+        cloud-jimeng only supports image generation (text2image +
+        image2image). Video and other types fall back to cloud-mock or
+        another configured engine.
+        """
         task_type = task.type.value if hasattr(task.type, 'value') else str(task.type)
         if task_type in ("image_draw", "image_refine"):
             return "cloud-jimeng"
-        if task_type in ("video_final", "video_preview"):
-            return "cloud-jimeng"
+        # Video / audio / other types: not supported by dreamina engine
         return "cloud-mock"
 
 
