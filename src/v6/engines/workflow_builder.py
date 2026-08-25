@@ -11,8 +11,13 @@ Supports:
   - ComfyUI Face Restore workflows (via build_face_restore_workflow)
   - TRELLIS image-to-3D workflows (via build_trellis_image_to_3d_workflow)
   - FLUX + TRELLIS full pipeline (via build_flux_trellis_full_workflow)
+  - ComfyUI Lip Sync workflows (via build_lipsync_workflow) — LatentSync
+  - ComfyUI Frame Interpolation workflows (via build_frame_interpolate_workflow) — RIFE VFI
   - TTS workflows (via build_tts_workflow) — subprocess-based, not ComfyUI
   - Hunyuan3D workflows (via build_hunyuan3d_workflow) — subprocess-based
+  - Shot Analysis workflows (via build_shot_analysis_workflow) — per-shot cinematic
+    deconstruction: ShotGeometryLK + AILab_QwenVL_Advanced (semantic) +
+    SAM3+SubjectMotionResidual (subject), merged via ShotJSONMerge
 """
 from __future__ import annotations
 
@@ -378,7 +383,6 @@ def build_tts_workflow(
     task_id: str = "",
     language: str = "auto",
     reference_audio: str = "",
-    prompt_text: str = "",
 ) -> dict[str, Any]:
     """Build a TTS workflow dict for the TTSTracker.
 
@@ -393,9 +397,6 @@ def build_tts_workflow(
         output_path: Explicit output file path.
         task_id: Used for auto-generating output path.
         reference_audio: Optional reference audio for voice cloning.
-        prompt_text: Transcript text of the reference audio (required for
-            CosyVoice zero-shot cloning — the model needs the text aligned
-            to the reference audio to extract voice identity).
 
     Returns:
         Dict with TTS parameters.
@@ -413,7 +414,6 @@ def build_tts_workflow(
         "output_path": output_path,
         "language": language,
         "reference_audio": reference_audio,
-        "prompt_text": prompt_text,
         "track": backend if backend in ("zh", "en", "bilingual", "gpt_sovits", "chatterbox", "cosyvoice") else "",
     }
 
@@ -421,15 +421,11 @@ def build_tts_workflow(
 def build_hunyuan3d_workflow(
     input_image: str,
     output_path: str = "",
-    model: str = "mini",
-    texture_mode: str = "none",
+    model: str = "full",
     device: str = "cuda:0",
     steps: int = 50,
     seed: int | None = None,
     model_dir: str = "",
-    paint_model_dir: str = "",
-    render_size: int = 1024,
-    texture_size: int = 1024,
     task_id: str = "",
 ) -> dict[str, Any]:
     """Build a Hunyuan3D-2 parameter dict for Hunyuan3DEngine.submit().
@@ -441,15 +437,11 @@ def build_hunyuan3d_workflow(
     Args:
         input_image: Absolute path to source image (PNG/JPG).
         output_path: Output GLB path. Auto-generated under KAIS_OUTPUT_ROOT if empty.
-        model: "mini" or "full" (default mini = Hunyuan3D-2mini, recommended).
-        texture_mode: "none" (geometry only) or "texture" (PBR multiview paint).
+        model: "mini" or "full" (default full = Hunyuan3D-2.1).
         device: Torch device (cuda:0). Remapped to CUDA_VISIBLE_DEVICES in script.
-        steps: Inference steps (default 50; ~70s on RTX 3090 for mini model).
+        steps: Inference steps (default 50; ~75s on RTX 3090 for full model).
         seed: Reproducibility seed. Pipeline default if None.
-        model_dir: Override shape model checkpoint directory.
-        paint_model_dir: Override PBR paint model directory.
-        render_size: PBR texture render resolution (default 1024; 512 for low VRAM).
-        texture_size: PBR texture output resolution (default 1024; 512 for low VRAM).
+        model_dir: Override model checkpoint directory.
         task_id: Used for default output path naming.
 
     Returns:
@@ -464,18 +456,13 @@ def build_hunyuan3d_workflow(
         "input_image": input_image,
         "output_path": output_path,
         "model": model,
-        "texture_mode": texture_mode,
         "device": device,
         "steps": steps,
-        "render_size": render_size,
-        "texture_size": texture_size,
     }
     if seed is not None:
         workflow["seed"] = seed
     if model_dir:
         workflow["model_dir"] = model_dir
-    if paint_model_dir:
-        workflow["paint_model_dir"] = paint_model_dir
     return workflow
 
 
@@ -1464,3 +1451,294 @@ def build_image_refine_workflow(
         },
     }
     return workflow
+
+
+def build_lipsync_workflow(
+    video_input: str,
+    audio_input: str,
+    seed: int | None = None,
+    lips_expression: float = 1.5,
+    inference_steps: int = 20,
+    output_fps: int = 25,
+    filename_prefix: str = "lipsync",
+) -> dict[str, Any]:
+    """Build a LatentSync lip synchronization ComfyUI workflow.
+
+    Pipeline: VHS_LoadVideo -> LoadAudio -> LatentSyncNode -> VHS_VideoCombine.
+
+    Args:
+        video_input: Video filename in ComfyUI input/ directory.
+        audio_input: Audio filename or URL (http/https allowed).
+        seed: Random seed. Random if None.
+        lips_expression: Lip expression intensity (1.0-3.0, default 1.5).
+        inference_steps: LatentSync inference steps (default 20).
+        output_fps: Output video frame rate (default 25 for LatentSync).
+        filename_prefix: Output filename prefix.
+
+    Returns:
+        ComfyUI API-format workflow dict with 4 nodes.
+
+    Raises:
+        ValueError: If video_input or audio_input contains path traversal or absolute path.
+    """
+    # Input validation — reject path traversal and absolute paths
+    if ".." in video_input or video_input.startswith("/"):
+        raise ValueError(
+            f"video_input contains invalid path: {video_input!r} "
+            "(must not contain '..' or start with '/')"
+        )
+    if not (audio_input.startswith("http://") or audio_input.startswith("https://")):
+        if ".." in audio_input or audio_input.startswith("/"):
+            raise ValueError(
+                f"audio_input contains invalid path: {audio_input!r} "
+                "(must not contain '..' or start with '/')"
+            )
+
+    import random
+    if seed is None:
+        seed = random.randint(0, 2**32 - 1)
+
+    workflow: dict[str, Any] = {
+        "1": {  # VHS_LoadVideo — extract frames from video
+            "class_type": "VHS_LoadVideo",
+            "inputs": {
+                "video": video_input,
+                "force_rate": 0,
+                "custom_width": -1,
+                "custom_height": -1,
+                "frame_start": 0,
+                "frame_end": -1,
+            },
+        },
+        "2": {  # LoadAudio — load audio waveform
+            "class_type": "LoadAudio",
+            "inputs": {
+                "audio": audio_input,
+            },
+        },
+        "3": {  # LatentSyncNode — lip sync inference
+            "class_type": "LatentSyncNode",
+            "inputs": {
+                "images": ["1", 0],
+                "audio": ["2", 0],
+                "seed": seed,
+                "lips_expression": lips_expression,
+                "inference_steps": inference_steps,
+            },
+        },
+        "4": {  # VHS_VideoCombine — encode output as MP4
+            "class_type": "VHS_VideoCombine",
+            "inputs": {
+                "images": ["3", 0],
+                "frame_rate": output_fps,
+                "loop_count": 0,
+                "filename_prefix": filename_prefix,
+                "format": "video/h264-mp4",
+                "pingpong": False,
+                "save_output": True,
+            },
+        },
+    }
+    return workflow
+
+
+def build_frame_interpolate_workflow(
+    video_input: str,
+    interpolation_factor: int = 2,
+    ckpt_name: str = "rife49.pth",
+    output_fps: int | None = None,
+    seed: int | None = None,
+    filename_prefix: str = "frame_interp",
+) -> dict[str, Any]:
+    """Build a RIFE frame interpolation ComfyUI workflow.
+
+    Pipeline: VHS_LoadVideo -> RIFE VFI -> VHS_VideoCombine.
+
+    The RIFE multiplier equals interpolation_factor - 1 (e.g., 2x -> mult 1, 4x -> mult 3).
+
+    Args:
+        video_input: Video filename in ComfyUI input/ directory.
+        interpolation_factor: Target frame multiplier (2, 4, or 8; default 2).
+        ckpt_name: RIFE model checkpoint filename (default rife49.pth).
+        output_fps: Output frame rate. Defaults to 30 if not specified.
+        seed: Kept for API consistency; RIFE VFI does not use seed.
+        filename_prefix: Output filename prefix.
+
+    Returns:
+        ComfyUI API-format workflow dict with 3 nodes.
+
+    Raises:
+        ValueError: If video_input contains path traversal or absolute path.
+    """
+    # Input validation — reject path traversal and absolute paths
+    if ".." in video_input or video_input.startswith("/"):
+        raise ValueError(
+            f"video_input contains invalid path: {video_input!r} "
+            "(must not contain '..' or start with '/')"
+        )
+
+    # RIFE multiplier = interpolation_factor - 1
+    multiplier = interpolation_factor - 1
+
+    # Default output FPS
+    if output_fps is None:
+        output_fps = 30
+
+    workflow: dict[str, Any] = {
+        "1": {  # VHS_LoadVideo — extract frames from video
+            "class_type": "VHS_LoadVideo",
+            "inputs": {
+                "video": video_input,
+                "force_rate": 0,
+                "custom_width": -1,
+                "custom_height": -1,
+                "frame_start": 0,
+                "frame_end": -1,
+            },
+        },
+        "2": {  # RIFE VFI — frame interpolation
+            "class_type": "RIFE VFI",
+            "inputs": {
+                "images": ["1", 0],
+                "ckpt_name": ckpt_name,
+                "multiplier": multiplier,
+            },
+        },
+        "3": {  # VHS_VideoCombine — encode output as MP4
+            "class_type": "VHS_VideoCombine",
+            "inputs": {
+                "images": ["2", 0],
+                "frame_rate": output_fps,
+                "loop_count": 0,
+                "filename_prefix": filename_prefix,
+                "format": "video/h264-mp4",
+                "pingpong": False,
+                "save_output": True,
+            },
+        },
+    }
+    return workflow
+
+
+# ─── Shot Analysis (per-shot cinematic deconstruction) ───
+# QwenVL prompt 模板(v2: 锐化景别定义 + 显式教"看背景判相机运动")。
+# 移植自已验证的 /tmp/shot_analysis_driver.py,原样保留语义。
+SEMANTIC_PROMPT = (
+    "你是摄影指导分析助手。这是同一镜头的采样帧。判断步骤:先看【背景是否整体位移】判断相机运动,"
+    "再看主体。只输出一个JSON对象,禁止任何其他文字:\n"
+    '{"shot_scale":"远景(人很小,环境为主)|全景(人物全身+环境)|中景(人物膝盖/腰部以上)|'
+    '近景(人物胸部以上)|特写(面部或局部)|大特写 之一,按人物在画面占比判断",'
+    '"camera_primitive":"看背景:背景整体左右平移=pan_left/pan_right,上下平移=tilt_up/tilt_down,'
+    '径向放大缩小=zoom_in/zoom_out/dolly_in/dolly_out,弧线移动=arc_left/arc_right;若【背景静止、只有主体在动】则=static;'
+    '画面持续跟随移动主体=follow;手持微晃=handheld 之一",'
+    '"camera_speed":"slow|medium|fast",'
+    '"subject_motion":"主体自身运动方向与方式(已扣除相机),不超过15字",'
+    '"lens_feel":"wide|normal|telephoto",'
+    '"lighting":"不超过3个关键词"}\n'
+    "无法判断的字段填null。"
+)
+
+
+def build_shot_analysis_workflow(
+    shot: dict[str, Any],
+    video: str,
+    *,
+    semantic: bool = True,
+    subject: bool = False,
+    grid_n: int = 20,
+    fps: float = 24.0,
+    save_dir: str = "/mnt/agents/output/gpu1/shot_analysis",
+    qwen_model: str = "Qwen3-VL-8B-Instruct",
+    quant: str = "8-bit (Balanced)",
+    frame_count: int = 16,
+) -> dict[str, Any]:
+    """构建单镜头运镜解构 ComfyUI 工作流(API prompt dict)。
+
+    三层分析:
+      - 几何层(ShotGeometryLK):Lucas-Kaneda 网格光流 → 相机几何运动
+      - 语义层(AILab_QwenVL_Advanced,可选):Qwen3-VL 锐化景别 + 相机 primitive
+      - 主体层(SAM3Segment + SubjectMotionResidual,可选):主体分割 → 残差运动
+    经 ShotJSONMerge 汇总落盘到 ``{save_dir}/shot_{id:03d}.json``。
+
+    移植自已验证的 ``shot_analysis_driver.build_prompt`` + ``SEMANTIC_PROMPT``
+    (v2),节点接线与字段原样保留。
+
+    Args:
+        shot: ``{"id": int, "start_sec": float, "end_sec": float}``。
+        video: 容器可见的视频绝对路径。
+        semantic: 启用 QwenVL 语义层(默认 True)。
+        subject: 启用 SAM3 主体层(默认 False)。
+        grid_n: 几何光流网格密度(默认 20)。
+        fps: 帧率,用于把秒换算成帧索引(默认 24.0)。
+        save_dir: **绝对容器路径** —— ShotJSONMerge 用 os.path.join(_OUT_DIR, save_dir, ...),
+            传绝对路径会覆盖默认 _OUT_DIR,使输出落到主机挂载的可见存储。
+        qwen_model: QwenVL 模型名(默认 Qwen3-VL-8B-Instruct)。
+        quant: QwenVL 量化配置(默认 8-bit (Balanced))。
+        frame_count: QwenVL 采样帧数(默认 16)。
+
+    Returns:
+        ComfyUI API-format workflow dict({node_id: {class_type, inputs}})。
+    """
+    shot_id_str = f"shot_{int(shot['id']):03d}"
+    start, end = float(shot["start_sec"]), float(shot["end_sec"])
+    skip = int(round(start * fps))
+    cap = max(2, int(round((end - start) * fps)))
+
+    nodes: dict[str, Any] = {}
+    nodes["load"] = {
+        "class_type": "VHS_LoadVideoPath",
+        "inputs": {
+            "video": video, "force_rate": 0.0, "custom_width": 0, "custom_height": 0,
+            "frame_load_cap": cap, "skip_first_frames": skip, "select_every_nth": 1,
+        },
+    }
+    nodes["geo"] = {
+        "class_type": "ShotGeometryLK",
+        "inputs": {"images": ["load", 0], "grid_n": grid_n},
+    }
+    nodes["viz_geo"] = {"class_type": "PreviewImage", "inputs": {"images": ["geo", 1]}}
+
+    merge_inputs: dict[str, Any] = {
+        "shot_id": shot_id_str, "save_dir": save_dir,
+        "geometry_json": ["geo", 0],
+    }
+
+    if semantic:
+        # AILab_QwenVL_Advanced: API prompt 必须显式提供全部 required 输入(UI 默认不自动填)
+        nodes["qwen"] = {
+            "class_type": "AILab_QwenVL_Advanced",
+            "inputs": {
+                "model_name": qwen_model, "quantization": quant,
+                "attention_mode": "auto", "use_torch_compile": False, "device": "auto",
+                "preset_prompt": "🖼️ Detailed Description",   # custom_prompt 会完全覆盖它
+                "custom_prompt": SEMANTIC_PROMPT,
+                "max_tokens": 256, "temperature": 0.1, "top_p": 0.9,
+                "num_beams": 1, "repetition_penalty": 1.2,
+                "frame_count": frame_count, "keep_model_loaded": True, "seed": 1,
+                "video": ["load", 0],            # 帧序列作为 video 输入
+            },
+        }
+        merge_inputs["semantic_json"] = ["qwen", 0]
+
+    if subject:
+        # 主体层:SAM3 文本提示分割(逐帧,无需外部 loader) → masks → SubjectMotionResidual
+        # SAM3Segment 自带模型加载,prompt 填主体描述
+        nodes["sam"] = {
+            "class_type": "SAM3Segment",
+            "inputs": {
+                "image": ["load", 0],
+                # 风格化动画:通用 "main subject" 不接地气,用更具体的概念词 + 降阈值
+                "prompt": "character, person, creature, animal, or figure",
+                "output_mode": "Merged", "confidence_threshold": 0.25,
+                "device": "GPU",
+            },
+        }
+        nodes["subj"] = {
+            "class_type": "SubjectMotionResidual",
+            "inputs": {"images": ["load", 0], "masks": ["sam", 1], "grid_n": grid_n},
+        }
+        nodes["viz_subj"] = {"class_type": "PreviewImage", "inputs": {"images": ["subj", 1]}}
+        merge_inputs["subject_json"] = ["subj", 0]
+
+    nodes["merge"] = {"class_type": "ShotJSONMerge", "inputs": merge_inputs}
+    return nodes

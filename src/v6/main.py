@@ -15,8 +15,17 @@ from src.v6.engine_pool import EnginePool, get_engine_pool
 from src.v6.engines.base import BackendType
 from src.v6.executor import get_executor
 from src.v6.engines.mock import MockEngine
-from src.v6.engines.tts import TTSTracker
 from src.v6.engines.tts_http import TripleTrackTTSEngine
+
+# In-process TTS tracker needs the heavy local TTS stack (numba/torch/...);
+# optional at runtime — registration below is skipped when unavailable.
+try:
+    from src.v6.engines.tts import TTSTracker
+except Exception as _tts_import_exc:  # pragma: no cover
+    TTSTracker = None
+    logging.getLogger(__name__).warning(
+        "TTSTracker unavailable (heavy deps not installed): %s",
+        _tts_import_exc)
 from src.v6.engines.hunyuan3d import Hunyuan3DEngine
 from src.v6.engines.hunyuan3d_mv import Hunyuan3DMvEngine
 from src.v6.engines.color_grade import ColorGradeEngine
@@ -129,6 +138,8 @@ async def lifespan(app: FastAPI):
 
     # TTS Tracker (CosyVoice in-process + edge-tts fallback)
     try:
+        if TTSTracker is None:
+            raise RuntimeError("TTSTracker import unavailable (heavy deps not installed)")
         tts_tracker = TTSTracker()
         await tts_tracker.start()
         executor.register_engine(tts_tracker)

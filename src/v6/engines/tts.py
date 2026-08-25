@@ -17,8 +17,11 @@ Lifecycle:
 from __future__ import annotations
 
 # ── Disable numba JIT BEFORE any import that touches librosa ──────────────
-import numba  # noqa: E402 — must be before librosa
-numba.config.DISABLE_JIT = True
+try:
+    import numba  # noqa: E402 — must be before librosa
+    numba.config.DISABLE_JIT = True
+except ImportError:  # numba absent → no JIT to disable; librosa may not be installed either
+    numba = None
 
 import asyncio
 import gc
@@ -34,7 +37,7 @@ from typing import Any, Dict, Optional
 import numpy as np
 import torch
 
-from src.v6.engines.base import BaseEngine, EngineCapabilities, EngineStatus
+from src.v6.engines.base import BackendType, BaseEngine, EngineCapabilities, EngineStatus
 
 logger = logging.getLogger(__name__)
 
@@ -171,10 +174,10 @@ class CosyVoiceTrack(BaseTrack):
     def _load_model(self) -> None:
         sys.path.insert(0, COSYVOICE_ROOT)
         sys.path.insert(0, os.path.join(COSYVOICE_ROOT, "third_party", "Matcha-TTS"))
-        from cosyvoice.cli.cosyvoice import CosyVoice3
+        from cosyvoice.cli.cosyvoice import AutoModel
 
-        model_dir = os.environ.get("COSYVOICE_MODEL_DIR", os.path.join(COSYVOICE_ROOT, "pretrained_models", "CosyVoice-300M"))
-        self._model = CosyVoice3(model_dir=model_dir)
+        model_dir = os.path.join(COSYVOICE_ROOT, "pretrained_models", "CosyVoice-300M")
+        self._model = AutoModel(model_dir=model_dir)
         logger.info("CosyVoice-300M loaded")
 
     def _unload_model(self) -> None:
@@ -188,7 +191,6 @@ class CosyVoiceTrack(BaseTrack):
 
     async def synthesize(self, text: str, voice: str = "default",
                          speed: float = 1.0, reference_audio: str = "",
-                         prompt_text: str = "",
                          output_path: str = "") -> dict:
         await self.ensure_loaded()
         loop = asyncio.get_event_loop()
@@ -196,35 +198,22 @@ class CosyVoiceTrack(BaseTrack):
         def _synth():
             nonlocal output_path
             try:
-                EOP = "<|endofprompt|>"
-                synth_text = text if EOP in text else text + EOP
-
                 if reference_audio and os.path.isfile(reference_audio):
-                    ref_path = reference_audio
-                    # CosyVoice inference_zero_shot needs the transcript of the
-                    # reference audio to align voice identity.  If the caller
-                    # supplies prompt_text, use it; otherwise fall back to EOP
-                    # (which usually produces silence — known limitation).
-                    cosy_prompt_text = prompt_text if prompt_text else EOP
+                    result = self._model.inference_zero_shot(
+                        text, "", reference_audio, stream=False, speed=speed,
+                    )
                 else:
-                    cosyvoice_asset = os.path.join(COSYVOICE_ROOT, "asset", "zero_shot_prompt.wav")
-                    if os.path.isfile(cosyvoice_asset):
-                        ref_path = cosyvoice_asset
-                        cosy_prompt_text = "希望你以后能够做的比我还好呦。" + EOP
-                    else:
-                        import soundfile as sf
-                        dummy_sr = 24000
-                        t = np.arange(0, 5.0, 1.0 / dummy_sr)
-                        dummy_wav = (np.random.randn(len(t)) * 0.05).astype(np.float32)
-                        dummy_path = os.path.join(OUTPUT_ROOT, "_cosyvoice_ref.wav")
-                        os.makedirs(os.path.dirname(dummy_path), exist_ok=True)
-                        sf.write(dummy_path, dummy_wav, dummy_sr)
-                        ref_path = dummy_path
-                        cosy_prompt_text = EOP
-
-                result = self._model.inference_zero_shot(
-                    synth_text, cosy_prompt_text, ref_path, stream=False, speed=speed,
-                )
+                    import soundfile as sf
+                    # No preset speakers → use cross_lingual with dummy ref
+                    dummy_sr = 22050
+                    t = np.arange(0, 10.0, 1.0 / dummy_sr)
+                    dummy_wav = np.sin(2 * np.pi * 440 * t).astype(np.float32) * 0.3
+                    dummy_path = os.path.join(OUTPUT_ROOT, "_cosyvoice_ref.wav")
+                    os.makedirs(os.path.dirname(dummy_path), exist_ok=True)
+                    sf.write(dummy_path, dummy_wav, dummy_sr)
+                    result = self._model.inference_cross_lingual(
+                        text, dummy_path, stream=False, speed=speed,
+                    )
                 import soundfile as sf
                 all_audio = []
                 sr = self._model.sample_rate
@@ -519,7 +508,6 @@ class TrackManager:
     async def synthesize(self, text: str, voice: str = "default",
                          speed: float = 1.0, backend: str = "auto",
                          language: str = "auto", reference_audio: str = "",
-                         prompt_text: str = "",
                          output_path: str = "") -> dict:
         """Route to the correct track and synthesize."""
         track_id = self.select_track(text, backend, language)
@@ -528,8 +516,7 @@ class TrackManager:
         try:
             result = await track.synthesize(
                 text=text, voice=voice, speed=speed,
-                reference_audio=reference_audio, prompt_text=prompt_text,
-                output_path=output_path,
+                reference_audio=reference_audio, output_path=output_path,
             )
             result["track"] = track_id
             return result
@@ -540,8 +527,7 @@ class TrackManager:
                 try:
                     result = await self._tracks["cosyvoice"].synthesize(
                         text=text, voice=voice, speed=speed,
-                        reference_audio=reference_audio, prompt_text=prompt_text,
-                        output_path=output_path,
+                        reference_audio=reference_audio, output_path=output_path,
                     )
                     result["track"] = "cosyvoice"
                     result["fallback_from"] = track_id
@@ -614,6 +600,10 @@ class TTSTracker(BaseEngine):
         )
 
     @property
+    def backend_type(self) -> BackendType:
+        return BackendType.SUBPROCESS
+
+    @property
     def manager(self) -> TrackManager:
         return self._manager
 
@@ -667,7 +657,6 @@ class TTSTracker(BaseEngine):
             backend=backend,
             language=language,
             reference_audio=workflow.get("reference_audio", ""),
-            prompt_text=workflow.get("prompt_text", ""),
             output_path=output_path,
         )
 

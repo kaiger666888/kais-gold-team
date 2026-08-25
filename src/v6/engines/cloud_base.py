@@ -138,8 +138,8 @@ class BaseCloudEngine(BaseEngine):
             self._jobs[job_id]["status"] = "running"
             self._jobs[job_id]["progress"] = 10.0
 
-            # Poll until done
-            max_wait = 600  # 10 min max
+            # Poll until done (env-tunable: long i2i batches need more headroom)
+            max_wait = int(os.environ.get("CLOUD_JOB_MAX_WAIT_SEC", "900"))
             start = time.time()
             while time.time() - start < max_wait:
                 await asyncio.sleep(3.0)

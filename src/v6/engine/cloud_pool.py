@@ -31,19 +31,20 @@ CLOUD_PROVIDERS = {
         "env_required": ["KLING_ACCESS_KEY", "KLING_SECRET_KEY"],
     },
     "jimeng": {
-        "name": "即梦 (Jimeng)",
+        "name": "即梦 (Dreamina CLI)",
         "available": True,
-        # video_final removed — use LTX-2.3 LiconMSR via ComfyUI :8188 for video
-        "supported_types": ["image_draw", "image_refine"],
+        "supported_types": ["image_draw", "image_refine"],  # image only; no video
         "engine_class": "src.v6.engines.cloud_jimeng.JimengEngine",
-        "env_required": ["JIMENG_API_KEY", "JIMENG_SESSION_ID"],  # either one
+        "env_required": [],  # dreamina CLI uses OAuth, no env vars needed
+        "cli_required": "dreamina",
+        "models": {"t2i": ["5.0", "5.0lite"], "t2i_default": "5.0", "i2i": "4.6"},
+        "locked_resolution": "2k",
     },
     "seedance": {
         "name": "Seedance",
-        # Disabled — video now routes to LTX-2.3 LiconMSR via ComfyUI :8188
-        "available": False,
+        "available": True,
         "supported_types": ["video_final", "video_preview"],
-        "engine_class": None,
+        "engine_class": "src.v6.engines.cloud_seedance.SeedanceEngine",
         "env_required": ["JIMENG_API_KEY", "JIMENG_SESSION_ID"],  # same as jimeng
     },
     "runway": {
@@ -100,11 +101,8 @@ class CloudPool:
         """Pick the best cloud engine for the task type."""
         task_type = task.type.value if hasattr(task.type, 'value') else str(task.type)
 
-        # Priority for IMAGE tasks: jimeng (best image quality) > kling.
-        # VIDEO tasks are NOT routed here on purpose — they go to the
-        # local ComfyUI / LTX-2.3 LiconMSR engine. seedance was removed
-        # (it shared jimeng's session and was only used for video).
-        priority = ["jimeng", "kling"]
+        # Priority: jimeng (most supported) > kling > seedance
+        priority = ["jimeng", "kling", "seedance"]
         for pid in priority:
             engine = self._engines.get(pid)
             if engine and engine.is_configured:

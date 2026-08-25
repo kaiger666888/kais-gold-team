@@ -91,8 +91,16 @@ class TaskExecutor:
             await engine.stop()
 
     async def _worker_loop(self) -> None:
-        """Continuously poll the task queue and dispatch."""
+        """Continuously poll the task queue and dispatch.
+
+        Cloud tasks (engine_id cloud-*) run CONCURRENTLY (bounded semaphore —
+        they don't contend for local VRAM, and kmc image batches rely on
+        ~12-way parallelism to match the old direct-CLI throughput). Local
+        GPU tasks stay serial to preserve the VRAM-guard ordering.
+        """
         store = get_task_store()
+        cloud_sem = asyncio.Semaphore(
+            int(os.environ.get("CLOUD_TASK_CONCURRENCY", "12")))
 
         while self._running:
             try:
@@ -106,14 +114,40 @@ class TaskExecutor:
             if not task or task.status == TaskStatus.CANCELLED:
                 continue
 
-            # Run task (per-task timeout: 防退化镜头/模型挂死阻塞整个队列)
+            if str(task.engine_id or "").startswith("cloud-"):
+                asyncio.create_task(self._run_task_bounded(task, cloud_sem))
+                continue
+
+            # Run task (per-task timeout: 防退化镜头/模型挂死阻塞整个队列).
+            # Must stay >= CLOUD_JOB_MAX_WAIT_SEC so cloud jobs aren't cut off
+            # mid-poll by the queue-level timeout.
+            task_timeout = int(os.environ.get("TASK_TIMEOUT_SEC", "960"))
             try:
-                await asyncio.wait_for(self._execute_task(task), timeout=600)
+                await asyncio.wait_for(self._execute_task(task), timeout=task_timeout)
             except asyncio.TimeoutError:
-                logger.warning("Task %s timed out after 600s — marking FAILED so queue continues",
-                               task.task_id)
+                logger.warning("Task %s timed out after %ss — marking FAILED so queue continues",
+                               task.task_id, task_timeout)
                 await store.update(task.task_id, status=TaskStatus.FAILED,
-                                   error="task timed out after 600s")
+                                   error=f"task timed out after {task_timeout}s")
+
+    async def _run_task_bounded(self, task: GenerationTask, sem: asyncio.Semaphore) -> None:
+        """Run one task under a concurrency semaphore with a hard timeout."""
+        store = get_task_store()
+        task_timeout = int(os.environ.get("TASK_TIMEOUT_SEC", "960"))
+        async with sem:
+            try:
+                await asyncio.wait_for(self._execute_task(task), timeout=task_timeout)
+            except asyncio.TimeoutError:
+                logger.warning("Task %s timed out after %ss — marking FAILED so queue continues",
+                               task.task_id, task_timeout)
+                await store.update(task.task_id, status=TaskStatus.FAILED,
+                                   error=f"task timed out after {task_timeout}s")
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Task %s execution crashed", task.task_id)
+                await store.update(task.task_id, status=TaskStatus.FAILED,
+                                   error="task execution crashed (see engine logs)")
 
     async def _execute_task(self, task: GenerationTask) -> None:
         """Execute a single task through the appropriate engine."""
@@ -547,16 +581,25 @@ class TaskExecutor:
                     # v1.5: ACE-Step music generation migrated to Node-layer ComfyUI
                     # workflow (src/routes/v1/ace/generate.ts). gold-team no longer
                     # builds MUSIC/SFX workflows — reject so callers know to use
-                    # /api/v1/ace/generate instead.
+                    # the correct Node-layer routes.
+                    #
+                    # Kai 2026-08-06 引擎职责边界:
+                    #   MUSIC (songs/long BGM/repainting) → POST /api/v1/ace/generate
+                    #   SFX (sound effects/short ambient/inpainting) → POST /api/v1/stableaudio/generate
+                    #   See audio-engine-adapter skill for full boundary rules.
                     logger.error(
-                        "MUSIC/SFX task %s rejected — gold-team no longer handles music "
-                        "generation. Use POST /api/v1/ace/generate (ComfyUI workflow) instead.",
+                        "MUSIC/SFX task %s rejected — gold-team no longer handles "
+                        "audio generation. MUSIC → POST /api/v1/ace/generate (ACE-Step 1.5). "
+                        "SFX → POST /api/v1/stableaudio/generate (Stable Audio 3 medium). "
+                        "See audio-engine-adapter skill for boundary rules.",
                         task.task_id,
                     )
                     await store.update(
                         task.task_id,
                         status=TaskStatus.FAILED,
-                        error="MUSIC/SFX not supported by gold-team since v1.5; use /api/v1/ace/generate",
+                        error="MUSIC/SFX not supported by gold-team since v1.5; "
+                        "MUSIC → /api/v1/ace/generate (ACE-Step 1.5); "
+                        "SFX → /api/v1/stableaudio/generate (Stable Audio 3 medium)",
                     )
                     return
                 elif task.type == TaskType.IMAGE_TO_3D_MV:
@@ -581,20 +624,29 @@ class TaskExecutor:
                     # Image refine — use img2img with ControlNet (placeholder: txt2img for now)
                     from src.v6.engines.workflow_builder import build_image_refine_workflow
                     src_img = task.params.get("image", "")
-                    if not src_img:
-                        logger.error("IMAGE_REFINE requires 'image' param, task %s", task.task_id)
+                    if not src_img and not task.params.get("ref_images"):
+                        logger.error("IMAGE_REFINE requires 'image' (or 'ref_images' for cloud engines) param, task %s", task.task_id)
                         await store.update(task.task_id, status=TaskStatus.FAILED, error="IMAGE_REFINE requires 'image' param")
                         return
-                    workflow = build_image_refine_workflow(
-                        image_name=src_img,
-                        prompt=task.params.get("prompt", ""),
-                        negative_prompt=task.params.get("negative_prompt", ""),
-                        strength=task.params.get("strength", 0.5),
-                        steps=task.params.get("steps", 28),
-                        cfg_scale=task.params.get("cfg_scale", 3.5),
-                        seed=task.params.get("seed"),
-                        filename_prefix=task.params.get("filename_prefix", "refined"),
-                    )
+                    if src_img:
+                        workflow = build_image_refine_workflow(
+                            image_name=src_img,
+                            prompt=task.params.get("prompt", ""),
+                            negative_prompt=task.params.get("negative_prompt", ""),
+                            strength=task.params.get("strength", 0.5),
+                            steps=task.params.get("steps", 28),
+                            cfg_scale=task.params.get("cfg_scale", 3.5),
+                            seed=task.params.get("seed"),
+                            filename_prefix=task.params.get("filename_prefix", "refined"),
+                        )
+                    else:
+                        # Cloud-engine path: no ComfyUI graph — the engine
+                        # consumes ref_images straight from params (passed
+                        # through in engine_params below).
+                        workflow = {
+                            "prompt": task.params.get("prompt", ""),
+                            "ref_images": task.params.get("ref_images", []),
+                        }
                     logger.info("Auto-built Image Refine workflow for task %s", task.task_id)
                 elif task.type == TaskType.COLOR_GRADE:
                     # ── COLOR_GRADE: CPU-only video color grading (ffmpeg + LUT) ──
@@ -648,6 +700,20 @@ class TaskExecutor:
                         )
                         logger.info("Auto-built FLUX Dev workflow for task %s (default)", task.task_id)
             engine_params = {"task_id": task.task_id, "type": task.type.value}
+
+            # Cloud engines consume these straight out of params — the
+            # auto-built ComfyUI workflow above is a local-engine artifact
+            # (prompt/geometry source), never submitted to the cloud API.
+            if str(getattr(engine, "engine_id", "")).startswith("cloud-"):
+                for key in ("prompt", "ratio", "model_version", "ref_images"):
+                    if task.params.get(key) is not None:
+                        engine_params[key] = task.params[key]
+                if "ref_images" not in engine_params:
+                    ref = task.params.get("images") or task.params.get("image")
+                    if ref:
+                        engine_params["ref_images"] = (
+                            [ref] if isinstance(ref, str) else list(ref)
+                        )
 
             engine_job_id = await engine.submit(workflow, engine_params)
 
