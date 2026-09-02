@@ -26,7 +26,6 @@ logger = logging.getLogger(__name__)
 VRAM_ESTIMATES: dict[str, int] = {
     "facefusion": 24000,
     "wan": 16000,
-    "ltx": 16000,
     "trellis": 16000,
     "hunyuan3d": 16000,
     "latentsync": 16000,

@@ -12,6 +12,9 @@ Each node defines GPU allocation per stage:
 
 The routing table covers all 35 task nodes from the V3.6 architecture spec,
 with 7 stages dynamically selecting the appropriate allocation column.
+
+2026-09-02: nodes 16/18 (文生视频/图生视频低参预览, ltx_i2v) 已随 ltx_i2v 引擎退役
+删除, 任务编号保留不重排以维持 task id 稳定性。
 """
 
 from __future__ import annotations
@@ -139,14 +142,7 @@ ROUTING_TABLE: dict[int, dict] = {
         "overflow": None,
         "cpu": None,
     },
-    16: {
-        "name": "文生视频（低参预览）",
-        "model_id": "ltx_i2v",
-        "preview": {"gpu": "3090", "slot": "heavy", "note": "LTX 12G + CosyVoice+Whisper"},
-        "heavy": {"gpu": "3090", "slot": "heavy", "note": "LTX"},
-        "overflow": {"gpu": "3060ti", "combo": "Combo-Audio-Full"},
-        "cpu": None,
-    },
+    # 16 (文生视频低参预览, ltx_i2v) 已退役 — 2026-09-02 ltx_i2v 引擎下线, 编号保留不重排
     17: {
         "name": "文生视频（高参确认）",
         "model_id": "wan13b_i2v",
@@ -155,14 +151,7 @@ ROUTING_TABLE: dict[int, dict] = {
         "overflow": None,
         "cpu": None,
     },
-    18: {
-        "name": "图生视频（低参预览）",
-        "model_id": "ltx_i2v",
-        "preview": {"gpu": "3090", "slot": "heavy", "note": "LTX I2V + Light pool"},
-        "heavy": {"gpu": "3090", "slot": "heavy", "note": "LTX I2V"},
-        "overflow": None,
-        "cpu": None,
-    },
+    # 18 (图生视频低参预览, ltx_i2v) 已退役 — 2026-09-02 ltx_i2v 引擎下线, 编号保留不重排
     19: {
         "name": "图生视频（高参终版）",
         "model_id": "wan14b_i2v",
@@ -174,7 +163,7 @@ ROUTING_TABLE: dict[int, dict] = {
     20: {
         "name": "视频生视频",
         "model_id": "wan14b_i2v",
-        "preview": {"gpu": "3090", "slot": "heavy", "note": "Wan14B / LTX"},
+        "preview": {"gpu": "3090", "slot": "heavy", "note": "Wan14B"},
         "heavy": {"gpu": "3090", "slot": "heavy", "note": "Wan14B V2V"},
         "overflow": None,
         "cpu": None,

@@ -27,15 +27,6 @@ MODELS: dict[str, dict] = {
         "runtime": "diffusion-runtime",
         "triton_hash": "sdxl_lightning_fp16_sm86",
     },
-    "ltx_i2v": {
-        "vram": 12000,
-        "precision": "bf16",
-        "category": "Heavy",
-        "combo_id": None,
-        "weight_path": "Lightricks/LTX-Video",
-        "runtime": "video-runtime",
-        "triton_hash": "ltx_i2v_fp16_sm86",
-    },
     "sd35_large": {
         "vram": 20000,
         "precision": "bf16",

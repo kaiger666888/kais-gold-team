@@ -1,4 +1,6 @@
-"""V3.6 Stage Configuration — 7 stages for 3090 dynamic VRAM partitioning.
+"""V3.6 Stage Configuration — 6 stages for 3090 dynamic VRAM partitioning.
+
+2026-09-02: "video_preview" stage (heavy_model: ltx_i2v) 已随 ltx_i2v 引擎退役移除.
 
 Each stage defines:
     - heavy_model: the model that occupies the Heavy slot on 3090
@@ -20,13 +22,7 @@ STAGE_CONFIG: dict[str, dict] = {
         "resident_light": ["cosyvoice", "whisper", "wd14", "rvc", "uvr5"],
         "desc": "海量抽卡+音频并行",
     },
-    "video_preview": {
-        "heavy_model": "ltx_i2v",
-        "heavy_vram": 12000,
-        "light_pool_max": 9000,
-        "resident_light": ["cosyvoice", "whisper", "gpt_sovits"],
-        "desc": "动态预览+配音",
-    },
+    # "video_preview" (heavy_model: ltx_i2v) 已退役 — 2026-09-02 ltx_i2v 引擎下线, 整条移除
     "image_refine": {
         "heavy_model": "sd35_large",
         "heavy_vram": 20000,

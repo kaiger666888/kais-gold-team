@@ -2,6 +2,7 @@
   "_meta": {
     "version": "2.1.0",
     "description": "V2 32-Node Routing Table — 3090 (24G) + 3060Ti (8G) + CPU (from Notion spec section 5)",
+    "retired_nodes": "node 17 (图生视频低参预览, ltx_i2v) 已于 2026-09-02 随 ltx_i2v 引擎退役删除, 编号保留不重排",
     "topology": {
       "gpu0": {"name": "RTX 3090", "pcie": "gen4_x16", "vram_cap_mb": 21504, "mode": "Zero Resident Heavy"},
       "gpu1": {"name": "RTX 3060Ti", "pcie": "gen3_x4", "vram_cap_mb": 7168, "mode": "Combo Resident Light"},
@@ -33,7 +34,6 @@
     {"node": 14, "name": "文生场景",                 "model_id": "sd35_scene",     "target_gpu": "3090",   "combo_id": null, "priority": 1},
     {"node": 15, "name": "文生视频（低参预览）",     "model_id": "wan13b",         "target_gpu": "3090",   "combo_id": null, "priority": 1},
     {"node": 16, "name": "文生视频（高参确认）",     "model_id": "wan14b",         "target_gpu": "3090",   "combo_id": null, "priority": 1},
-    {"node": 17, "name": "图生视频（低参预览）",     "model_id": "ltx_i2v",        "target_gpu": "3090",   "combo_id": null, "priority": 1},
     {"node": 18, "name": "图生视频（高参确认）",     "model_id": "wan14b_i2v",     "target_gpu": "3090",   "combo_id": null, "priority": 1},
     {"node": 19, "name": "视频生视频",               "model_id": "wan14b_v2v",     "target_gpu": "3090",   "combo_id": null, "priority": 1},
     {"node": 20, "name": "视频延长/补帧",            "model_id": "rife",           "target_gpu": "3090",   "combo_id": null, "priority": 1},
