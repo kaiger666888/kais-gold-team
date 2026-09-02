@@ -18,9 +18,9 @@ from config.routing_table import ROUTING_TABLE, build_routing_table
 class TestStageConfig:
     """Test STAGE_CONFIG completeness and validity."""
 
-    def test_seven_stages_defined(self):
-        """V3.6 defines exactly 7 stages."""
-        assert len(STAGE_CONFIG) == 7
+    def test_six_stages_defined(self):
+        """V3.6 defined 7 stages; video_preview (ltx_i2v) retired 2026-09-02 → 6."""
+        assert len(STAGE_CONFIG) == 6
 
     def test_required_stage_keys(self):
         """Each stage must have heavy_model, heavy_vram, light_pool_max, resident_light, desc."""
